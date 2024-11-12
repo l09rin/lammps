@@ -67,8 +67,9 @@ void PairSurfGranular::compute(int eflag, int vflag)
   int i,j,k,ii,jj,inum,jnum,itype,jtype;
   int isphere,itri,jflag,kflag,otherflag;
   double xtmp,ytmp,ztmp,radi,delx,dely,delz;
-  double radsphere,rsq,dr[3],contact[3],ds[3],vs[3];
+  double radsphere,rsq,radsum;
   double factor_couple,factor_lj,mi,mj,meff;
+  double dr[3],contact[3],ds[3],vs[3];
   double *endpt, *corner;
   double *forces, *torquesi, *torquesj, dq;
   double omega0[3] = {0.0, 0.0, 0.0};
@@ -191,14 +192,14 @@ void PairSurfGranular::compute(int eflag, int vflag)
       if ((style == TRI) && (tri[i] >= 0 || tri[j] < 0))
         error->one(FLERR,"Pair surf/granular interaction is invalid");
 
-      delx = xtmp - xsurf[j][0];
-      dely = xtmp - xsurf[j][1];
-      delz = xtmp - xsurf[j][2];
+      delx = xtmp - x[j][0];
+      dely = xtmp - x[j][1];
+      delz = xtmp - x[j][2];
       rsq = delx * delx + dely * dely + delz * delz;
 
       // skip contact check if particle/surf are too far apart
 
-      radsum = radi + rsurf[j];
+      radsum = radi + radius[j];
       if (rsq > radsum * radsum) {
         if (use_history) {
           touch[jj] = 0;

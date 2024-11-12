@@ -57,6 +57,9 @@ enum{LT,LE,GT,GE,EQ,NEQ,BETWEEN};
 enum{SPHERE,LINE,TRI};           // also in DumpImage
 enum{LINEAR,WIGGLE,ROTATE,TRANSROT,VARIABLE};
 
+enum{FLAT,CONCAVE,CONVEX};
+enum{SAME_SIDE,OPPOSITE_SIDE};
+
 #define DELTA 128
 
 /* ---------------------------------------------------------------------- */
@@ -77,7 +80,7 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
 
   heat_flag = 0;
   int classic_flag = 1;
-  if (strcmp(arg[4], "granular") == 0)  classic_flag = 0;
+  if (strcmp(arg[4], "granular") == 0) classic_flag = 0;
 
   // wall/particle coefficients
 
@@ -85,7 +88,7 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
   if (classic_flag) {
     iarg = model->define_classic_model(arg, 4, narg);
 
-    if (iarg < narg) {
+    while (iarg < narg) {
       if (strcmp(arg[iarg],"limit_damping") == 0) {
         model->limit_damping = 1;
         iarg += 1;
@@ -169,11 +172,19 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
   points_original = nullptr;
   xsurf_original = nullptr;
 
-  connect2d = nullptr;
-  connect3d = nullptr;
-  plist = nullptr;
+  neigh_p1 = neigh_p2 = nullptr;
+  pwhich_p1 = pwhich_p2 = nullptr;
+  nside_p1 = nside_p2 = nullptr;
+  aflag_p1 = aflag_p2 = nullptr;
+
   elist = nullptr;
   clist = nullptr;
+
+  connect2d = nullptr;
+  connect3d = nullptr;
+
+  xsurf = vsurf = omegasurf = nullptr;
+  radsurf = nullptr;
 
   nmax = 0;
   mass_rigid = nullptr;
@@ -199,7 +210,7 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
 
   // define points/lines/tris and their connectivity
   // done via molecule template ID or STL file
-  // check if arg = valid molecute template ID, else treat as STL file
+  // first check if arg is valid molecute template ID, else treat as STL file
 
   int imol = atom->find_molecule(arg[3]);
   if (imol >= 0) extract_from_molecules(arg[3]);
@@ -233,11 +244,20 @@ FixSurfaceGlobal::~FixSurfaceGlobal()
   memory->destroy(points_original);
   memory->destroy(xsurf_original);
 
-  memory->sfree(connect2d);
-  memory->sfree(connect3d);
-  memory->destroy(plist);
+  memory->destroy(neigh_p1);
+  memory->destroy(neigh_p2);
+  memory->destroy(pwhich_p1);
+  memory->destroy(pwhich_p2);
+  memory->destroy(nside_p1);
+  memory->destroy(nside_p2);
+  memory->destroy(aflag_p1);
+  memory->destroy(aflag_p2);
+
   memory->destroy(elist);
   memory->destroy(clist);
+
+  memory->sfree(connect2d);
+  memory->sfree(connect3d);
 
   memory->destroy(xsurf);
   memory->destroy(vsurf);
@@ -610,10 +630,11 @@ void FixSurfaceGlobal::post_force(int vflag)
 {
   int i,j,k,ii,jj,inum,jnum,jflag,otherflag;
   double xtmp,ytmp,ztmp,radi,delx,dely,delz;
-  double meff,factor_couple;
-  double rsq,dr[3],contact[3],ds[3],vs[3],*forces,*torquesi;
+  double meff;
   int *ilist,*jlist,*numneigh,**firstneigh;
   int *touch,**firsttouch,touch_flag;
+  double rsq,radsum;
+  double dr[3],contact[3],ds[3],vs[3],*forces,*torquesi;
   double *history,*allhistory,**firsthistory;
 
   model->history_update = 1;
@@ -697,8 +718,8 @@ void FixSurfaceGlobal::post_force(int vflag)
       rsq = delx * delx + dely * dely + delz * delz;
 
       // skip contact check if particle/surf are too far apart
-
-      radsum = radi + rsurf[j];
+      
+      radsum = radi + radsurf[j];
       if (rsq > radsum * radsum) {
         if (use_history) {
           touch[jj] = 0;
@@ -742,8 +763,6 @@ void FixSurfaceGlobal::post_force(int vflag)
                              contact,dr,rsq);
       }
 
-      // unset non-touching neighbors
-
       if (!jflag) {
         if (use_history) {
           touch[jj] = 0;
@@ -754,7 +773,7 @@ void FixSurfaceGlobal::post_force(int vflag)
       }
 
       // append surf to list of contacts
-
+      
     }
 
     // Reduce set of contacts
@@ -837,7 +856,8 @@ void FixSurfaceGlobal::post_force(int vflag)
       add3(f[i], forces, f[i]);
       add3(torque[i], torquesi, torque[i]);
       if (heat_flag) heatflow[i] += model->dq;
-  */
+    */
+  }
 }
 
 /* ----------------------------------------------------------------------
@@ -1363,7 +1383,8 @@ int FixSurfaceGlobal::image(int *&ivec, double **&darray)
 /* ----------------------------------------------------------------------
    extract lines or surfs from molecule template ID for one or more molecules
    concatenate into single list of lines and tris
-   create list of unique points using hash
+   identify unique points using hash
+   this creates points and lines or tris data structs (2d or 3d)
 ------------------------------------------------------------------------- */
 
 void FixSurfaceGlobal::extract_from_molecules(char *molID)
@@ -1516,7 +1537,8 @@ void FixSurfaceGlobal::extract_from_molecules(char *molID)
 
 /* ----------------------------------------------------------------------
    extract triangles from an STL file, can be text or binary
-   create list of unique points using hash
+   identify unique points using hash
+   this creates points and tris data structs (3d only)
 ------------------------------------------------------------------------- */
 
 void FixSurfaceGlobal::extract_from_stlfile(char *filename)
@@ -1605,6 +1627,7 @@ void FixSurfaceGlobal::extract_from_stlfile(char *filename)
 
 /* ----------------------------------------------------------------------
    create and initialize Connect2d info for all lines
+   this creates plines and connect2d data structs
 ------------------------------------------------------------------------- */
 
 void FixSurfaceGlobal::connectivity2d_global()
@@ -1615,9 +1638,7 @@ void FixSurfaceGlobal::connectivity2d_global()
 
   // setup end point connectivity lists
   // count # of lines containing each end point
-  // create ragged 2d array to contain all point indices, then fill it
-  // set neigh_p12 vector ptrs in connect2d to rows of ragged array
-  // np12 counts and vectors include self line
+  // plines = ragged 2d array with indices of lines which contain each point
 
   int *counts;
   memory->create(counts,npoints,"surface/global:count");
@@ -1629,30 +1650,68 @@ void FixSurfaceGlobal::connectivity2d_global()
     counts[lines[i].p2]++;
   }
 
-  memory->create_ragged(plist,npoints,counts,"surface/global:plist");
+  memory->create_ragged(plines,npoints,counts,"surface/global:plines");
 
   for (int i = 0; i < npoints; i++) counts[i] = 0;
 
   for (int i = 0; i < nlines; i++) {
-    plist[lines[i].p1][counts[lines[i].p1]++] = i;
-    plist[lines[i].p2][counts[lines[i].p2]++] = i;
+    plines[lines[i].p1][counts[lines[i].p1]++] = i;
+    plines[lines[i].p2][counts[lines[i].p2]++] = i;
   }
+
+  // subtract self from counts
+
+  for (int i = 0; i < npoints; i++) counts[i]--;
+
+  // allocate all ragged arrays which will be pointed to within Connect2d
+  
+  memory->create_ragged(neigh_p1,npoints,counts,"surface/global:neigh_p1");
+  memory->create_ragged(neigh_p2,npoints,counts,"surface/global:neigh_p2");
+  memory->create_ragged(pwhich_p1,npoints,counts,"surface/global:pwhich_p1");
+  memory->create_ragged(pwhich_p2,npoints,counts,"surface/global:pwhich_p2");
+  memory->create_ragged(nside_p1,npoints,counts,"surface/global:nside_p1");
+  memory->create_ragged(nside_p2,npoints,counts,"surface/global:nside_p2");
+  memory->create_ragged(aflag_p1,npoints,counts,"surface/global:aflag_p1");
+  memory->create_ragged(aflag_p2,npoints,counts,"surface/global:aflag_p2");
+  
+  // set vector ptrs within connect2d to rows of corresponding ragged arrays
 
   for (int i = 0; i < nlines; i++) {
     connect2d[i].np1 = counts[lines[i].p1];
-    if (connect2d[i].np1 == 1) connect2d[i].neigh_p1 = nullptr;
-    else connect2d[i].neigh_p1 = plist[lines[i].p1];
-
-    connect2d[i].np2 = counts[lines[i].p2];
-    if (connect2d[i].np2 == 1) connect2d[i].neigh_p2 = nullptr;
-    else connect2d[i].neigh_p2 = plist[lines[i].p2];
+    if (connect2d[i].np1 == 0) {
+      connect2d[i].neigh_p1 = nullptr;
+      connect2d[i].neigh_p2 = nullptr;
+      connect2d[i].pwhich_p1 = nullptr;
+      connect2d[i].pwhich_p2 = nullptr;
+      connect2d[i].nside_p1 = nullptr;
+      connect2d[i].nside_p2 = nullptr;
+      connect2d[i].aflag_p1 = nullptr;
+      connect2d[i].aflag_p2 = nullptr;
+    } else
+      connect2d[i].neigh_p1 = neigh_p1[lines[i].p1];
+      connect2d[i].neigh_p2 = neigh_p2[lines[i].p2];
+      connect2d[i].pwhich_p1 = pwhich_p1[lines[i].p1];
+      connect2d[i].pwhich_p2 = pwhich_p2[lines[i].p2];
+      connect2d[i].nside_p1 = nside_p1[lines[i].p1];
+      connect2d[i].nside_p2 = nside_p2[lines[i].p2];
+      connect2d[i].aflag_p1 = aflag_p1[lines[i].p1];
+      connect2d[i].aflag_p2 = aflag_p2[lines[i].p2];
   }
 
+  // NOTE: neigh p1/p2 includes self
+  // NOTE: need to allocate other data structs in Connect2d
+  
+  // NOTE: need to order these with FLAT connections first?
+  // NOTE: error checks for zero-length lines, duplicate lines
+  // NOTE: warn for too-small lines
+
   memory->destroy(counts);
+  memory->destroy(plines);
 }
 
 /* ----------------------------------------------------------------------
    create and initialize Connect3d info for all triangles
+   this creates elist/clist and connect3d data structs
 ------------------------------------------------------------------------- */
 
 void FixSurfaceGlobal::connectivity3d_global()
@@ -1808,7 +1867,7 @@ void FixSurfaceGlobal::surface_attributes()
   double delta[3],p12[3],p13[3];
   double *p1,*p2,*p3;
   double zunit[3] = {0.0,0.0,1.0};
-
+    
   memory->create(xsurf,nsurf,3,"surface/global:xsurf");
   memory->create(vsurf,nsurf,3,"surface/global:vsurf");
   memory->create(omegasurf,nsurf,3,"surface/global:omegasurf");
@@ -1830,7 +1889,7 @@ void FixSurfaceGlobal::surface_attributes()
     }
 
   } else {
-
+    
     for (int i = 0; i < nsurf; i++) {
       p1 = points[tris[i].p1].x;
       p2 = points[tris[i].p2].x;

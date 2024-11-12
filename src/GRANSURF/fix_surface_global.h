@@ -58,7 +58,7 @@ class FixSurfaceGlobal : public Fix {
 
  private:
   int dimension,firsttime,use_history;
-  double dt, skin;
+  double dt,skin;
 
   // for granular model choices
 
@@ -69,6 +69,8 @@ class FixSurfaceGlobal : public Fix {
   int tvar;
   char *tstr;
 
+  // per-surf properties
+  
   double **xsurf,**vsurf,**omegasurf,*radsurf;
 
   double triggersq;
@@ -137,22 +139,37 @@ class FixSurfaceGlobal : public Fix {
   int npoints,nlines,ntris;   // count of each
   int nsurf;                  // count of lines or tris for 2d/3d
 
-  int **plist;                // ragged 2d array for global line end pt lists
+                              // ragged 2d arrays for 2d connectivity
+  int **plines;               // indices of lines which contain each point
+  int **neigh_p1;
+  int **neigh_p2;
+  int **pwhich_p1;
+  int **pwhich_p2;
+  int **nside_p1;
+  int **nside_p2;
+  int **aflag_p1;
+  int **aflag_p2;
+
   int **elist;                // ragged 2d array for global tri edge lists
   int **clist;                // ragged 2d array for global tri corner pt lists
 
   // 2d/3d connectivity
 
   struct Connect2d {      // line connectivity
-    int np1,np2;          // # of lines connected to pts 1,2 (including self)
-    int *neigh_p1;        // indices of all lines connected to pt1 (if np1 > 1)
+    int np1,np2;          // # of lines connected to pts 1,2 (NOT including self)
+    int *neigh_p1;        // indices of all lines connected to pt1
     int *neigh_p2;        // ditto for pt2
-    int *cside_p1;        // sidedness for each line connected to pt1
-    int *cside_p2;        // ditto for pt2
-                          // cside = SAMESIDE, OPPOSITESIDE
-    int *cflag_p1;        // connection flag for each line connected to pt1
-    int *cflag_p2;        // ditto for pt2
-                          // cflag = FLAT, CONCAVE, CONVEX
+                          //   these are just pointers into plist
+    int *pwhich_p1;       // which pt (0,1) on each line connected to pt1
+    int *pwhich_p2;       // ditto for connected to pt2
+    int *nside_p1;        // normal flag for each line connected to pt1
+    int *nside_p2;        // ditto for connected to pt2
+                          //   nside = SAME_SIDE, OPPOSITE_SIDE
+                          //   SAME_SIDE = 2 normals are on same side of surf
+                          //   OPPOSITE_SIDE = they are on opposite sides of surf
+    int *aflag_p1;        // angle flag for each line connected to pt1
+    int *aflag_p2;        // ditto for connected to pt2
+                          //   aflag = FLAT, CONCAVE, CONVEX
   };
 
   struct Connect3d {      // tri connectivity
