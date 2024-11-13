@@ -1730,15 +1730,14 @@ void FixSurfaceGlobal::connectivity2d_global()
   }
 
   // set connect2d pwhich/nside/aflag for each end point of each line
-
+  // see fsg.h file for an explanation of each vector in Connect2d
+  // aflag is based on dot and cross product of 2 connected line normals
+  
   double dotline,dotnorm;
   double *inorm,*jnorm;
-  double iline[3],jline[3];
+  double icrossj[3];
   
   for (int i = 0; i < nlines; i++) {
-    
-    MathExtra::sub3(points[lines[i].p2].x,points[lines[i].p1].x,iline);
-
     for (m = 0; m < connect2d[i].np1; m++) {
       j = connect2d[i].neigh_p1[m];
 
@@ -1749,44 +1748,51 @@ void FixSurfaceGlobal::connectivity2d_global()
       if (lines[i].p1 == lines[j].p1) {
         connect2d[i].pwhich_p1[j] = 0;
         connect2d[i].nside_p1[j] = OPPOSITE_SIDE;
-        MathExtra::sub3(points[lines[j].p2].x,points[lines[j].p1].x,jline);
-        dotline = MathExtra::dot3(iline,jline);
         if (dotnorm < -1.0+FLATTHRESH) connect2d[i].aflag_p1[j] = FLAT;
-        
-      } else {
+        else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+          if (icrossj[2] > 0.0) connect2d[i].aflag_p1[j] = CONCAVE;
+          else connect2d[i].aflag_p1[j] = CONVEX;
+        }
+      } else if (lines[i].p1 == lines[j].p2) {
         connect2d[i].pwhich_p1[j] = 1;
         connect2d[i].nside_p1[j] = SAME_SIDE;
-        MathExtra::sub3(points[lines[j].p1].x,points[lines[j].p2].x,jline);
-        dotline = MathExtra::dot3(iline,jline);
         if (dotnorm > 1.0-FLATTHRESH) connect2d[i].aflag_p1[j] = FLAT;
+        else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+          if (icrossj[2] < 0.0) connect2d[i].aflag_p1[j] = CONCAVE;
+          else connect2d[i].aflag_p1[j] = CONVEX;
+        }
       }
-
-      
     }
 
-    /*
     for (m = 0; m < connect2d[i].np2; m++) {
       j = connect2d[i].neigh_p2[m];
-      if (lines[i].p2 == lines[j].p1) {
-        connect2d[i].pwhich_p2[j] = 0;
-        connect2d[i].nside_p2[j] = SAME_SIDE;
-      } else {
-        connect2d[i].pwhich_p2[j] = 1;
-        connect2d[i].nside_p2[j] = OPPOSITE_SIDE;
-      }
-      
-      MathExtra::sub3(points[lines[i].p1].x,points[lines[i].p2].x,iline);
-      if (connect2d[i].pwhich_p2[j] == 0)
-        MathExtra::sub3(points[lines[j].p2].x,points[lines[j].p1].x,jline);
-      else
-        MathExtra::sub3(points[lines[j].p1].x,points[lines[j].p2].x,jline);
-      dotline = MathExtra::dot3(iline,jline);
 
       inorm = lines[i].norm;
       jnorm = lines[j].norm;
       dotnorm = MathExtra::dot3(inorm,jnorm);
+      
+      if (lines[i].p2 == lines[j].p1) {
+        connect2d[i].pwhich_p2[j] = 0;
+        connect2d[i].nside_p2[j] = SAME_SIDE;
+        if (dotnorm > 1.0-FLATTHRESH) connect2d[i].aflag_p2[j] = FLAT;
+        else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+          if (icrossj[2] > 0.0) connect2d[i].aflag_p2[j] = CONCAVE;
+          else connect2d[i].aflag_p2[j] = CONVEX;
+        }
+      } else if (lines[i].p2 == lines[j].p2) {
+        connect2d[i].pwhich_p2[j] = 1;
+        connect2d[i].nside_p2[j] = OPPOSITE_SIDE;
+        if (dotnorm < -1.0+FLATTHRESH) connect2d[i].aflag_p2[j] = FLAT;
+        else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+          if (icrossj[2] < 0.0) connect2d[i].aflag_p2[j] = CONCAVE;
+          else connect2d[i].aflag_p2[j] = CONVEX;
+        }
+      }
     }
-    */
   }
 
   // NOTE: set flatthresh based on angle (degrees) set by user
