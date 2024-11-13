@@ -163,7 +163,7 @@ line segments (2d).
 * keyword = *group* or *move*
 
   .. parsed-literal::
-       
+
        *group* values = group-ID style args
          group-ID = ID of the new group or existing group of surfs
            new group = a new group is created with the listed surfs
@@ -205,7 +205,7 @@ NOTE: make this addition on center point to the group doc page as well?
 
 See the :doc:`fix move <fix_move>` doc page for a detailed explanation
 of the various move styles and their arguments.
-       
+
 Examples are as follows:
 
 .. code-block:: LAMMPS
@@ -215,7 +215,7 @@ Examples are as follows:
 Note that the same fix_modify keyword can be used mulltiple times,
 e.g. to define multiple groups or to defined different prescribed
 motions to different groups of triangles/lines.
-         
+
 No global or per-atom quantities are stored by this fix for access by
 various :doc:`output commands <Howto_output>`.  No parameter of this
 fix can be used with the *start/stop* keywords of the :doc:`run <run>`
