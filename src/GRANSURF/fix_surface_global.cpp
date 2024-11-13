@@ -60,6 +60,7 @@ enum{LINEAR,WIGGLE,ROTATE,TRANSROT,VARIABLE};
 enum{FLAT,CONCAVE,CONVEX};
 enum{SAME_SIDE,OPPOSITE_SIDE};
 
+#define FLATTHRESH 0.01
 #define DELTA 128
 
 /* ---------------------------------------------------------------------- */
@@ -1637,7 +1638,7 @@ void FixSurfaceGlobal::connectivity2d_global()
                     "surface/global:connect2d");
 
   // setup end point connectivity lists
-  // count # of lines containing each end point
+  // count # of lines containing each end point (including self)
   // plines = ragged 2d array with indices of lines which contain each point
 
   int *counts;
@@ -1659,12 +1660,12 @@ void FixSurfaceGlobal::connectivity2d_global()
     plines[lines[i].p2][counts[lines[i].p2]++] = i;
   }
 
-  // subtract self from counts
-
+  // allocate all ragged arrays which Connect2d will point to
+  // first subtract self from each point's count
+  //   b/c connect2d vectors will NOT include self
+  
   for (int i = 0; i < npoints; i++) counts[i]--;
 
-  // allocate all ragged arrays which will be pointed to within Connect2d
-  
   memory->create_ragged(neigh_p1,npoints,counts,"surface/global:neigh_p1");
   memory->create_ragged(neigh_p2,npoints,counts,"surface/global:neigh_p2");
   memory->create_ragged(pwhich_p1,npoints,counts,"surface/global:pwhich_p1");
@@ -1674,37 +1675,126 @@ void FixSurfaceGlobal::connectivity2d_global()
   memory->create_ragged(aflag_p1,npoints,counts,"surface/global:aflag_p1");
   memory->create_ragged(aflag_p2,npoints,counts,"surface/global:aflag_p2");
   
-  // set vector ptrs within connect2d to rows of corresponding ragged arrays
+  // set connect2d vector ptrs to rows of corresponding ragged arrays
 
   for (int i = 0; i < nlines; i++) {
     connect2d[i].np1 = counts[lines[i].p1];
     if (connect2d[i].np1 == 0) {
       connect2d[i].neigh_p1 = nullptr;
-      connect2d[i].neigh_p2 = nullptr;
       connect2d[i].pwhich_p1 = nullptr;
-      connect2d[i].pwhich_p2 = nullptr;
       connect2d[i].nside_p1 = nullptr;
-      connect2d[i].nside_p2 = nullptr;
       connect2d[i].aflag_p1 = nullptr;
-      connect2d[i].aflag_p2 = nullptr;
-    } else
+    } else {
       connect2d[i].neigh_p1 = neigh_p1[lines[i].p1];
-      connect2d[i].neigh_p2 = neigh_p2[lines[i].p2];
       connect2d[i].pwhich_p1 = pwhich_p1[lines[i].p1];
-      connect2d[i].pwhich_p2 = pwhich_p2[lines[i].p2];
       connect2d[i].nside_p1 = nside_p1[lines[i].p1];
-      connect2d[i].nside_p2 = nside_p2[lines[i].p2];
       connect2d[i].aflag_p1 = aflag_p1[lines[i].p1];
+    }
+
+    connect2d[i].np2 = counts[lines[i].p2];
+    if (connect2d[i].np2 == 0) {
+      connect2d[i].neigh_p2 = nullptr;
+      connect2d[i].pwhich_p2 = nullptr;
+      connect2d[i].nside_p2 = nullptr;
+      connect2d[i].aflag_p2 = nullptr;
+    } else {
+      connect2d[i].neigh_p2 = neigh_p2[lines[i].p2];
+      connect2d[i].pwhich_p2 = pwhich_p2[lines[i].p2];
+      connect2d[i].nside_p2 = nside_p2[lines[i].p2];
       connect2d[i].aflag_p2 = aflag_p2[lines[i].p2];
+    }
   }
 
-  // NOTE: neigh p1/p2 includes self
-  // NOTE: need to allocate other data structs in Connect2d
+  // set connect2d neigh for each end point of each line
+  // do NOT include self
+
+  int j,m;
   
-  // NOTE: need to order these with FLAT connections first?
+  for (int i = 0; i < nlines; i++) {
+    if (connect2d[i].np1) {
+      j = 0;
+      for (m = 0; m <= connect2d[i].np1; m++) {
+        if (plines[lines[i].p1][m] == i) continue;
+        connect2d[i].neigh_p1[j] = plines[lines[i].p1][m];
+        j++;
+      }
+    }
+    if (connect2d[i].np2) {
+      j = 0;
+      for (m = 0; m <= connect2d[i].np2; m++) {
+        if (plines[lines[i].p2][m] == i) continue;
+        connect2d[i].neigh_p2[j] = plines[lines[i].p2][m];
+        j++;
+      }
+    }
+  }
+
+  // set connect2d pwhich/nside/aflag for each end point of each line
+
+  double dotline,dotnorm;
+  double *inorm,*jnorm;
+  double iline[3],jline[3];
+  
+  for (int i = 0; i < nlines; i++) {
+    
+    MathExtra::sub3(points[lines[i].p2].x,points[lines[i].p1].x,iline);
+
+    for (m = 0; m < connect2d[i].np1; m++) {
+      j = connect2d[i].neigh_p1[m];
+
+      inorm = lines[i].norm;
+      jnorm = lines[j].norm;
+      dotnorm = MathExtra::dot3(inorm,jnorm);
+      
+      if (lines[i].p1 == lines[j].p1) {
+        connect2d[i].pwhich_p1[j] = 0;
+        connect2d[i].nside_p1[j] = OPPOSITE_SIDE;
+        MathExtra::sub3(points[lines[j].p2].x,points[lines[j].p1].x,jline);
+        dotline = MathExtra::dot3(iline,jline);
+        if (dotnorm < -1.0+FLATTHRESH) connect2d[i].aflag_p1[j] = FLAT;
+        
+      } else {
+        connect2d[i].pwhich_p1[j] = 1;
+        connect2d[i].nside_p1[j] = SAME_SIDE;
+        MathExtra::sub3(points[lines[j].p1].x,points[lines[j].p2].x,jline);
+        dotline = MathExtra::dot3(iline,jline);
+        if (dotnorm > 1.0-FLATTHRESH) connect2d[i].aflag_p1[j] = FLAT;
+      }
+
+      
+    }
+
+    /*
+    for (m = 0; m < connect2d[i].np2; m++) {
+      j = connect2d[i].neigh_p2[m];
+      if (lines[i].p2 == lines[j].p1) {
+        connect2d[i].pwhich_p2[j] = 0;
+        connect2d[i].nside_p2[j] = SAME_SIDE;
+      } else {
+        connect2d[i].pwhich_p2[j] = 1;
+        connect2d[i].nside_p2[j] = OPPOSITE_SIDE;
+      }
+      
+      MathExtra::sub3(points[lines[i].p1].x,points[lines[i].p2].x,iline);
+      if (connect2d[i].pwhich_p2[j] == 0)
+        MathExtra::sub3(points[lines[j].p2].x,points[lines[j].p1].x,jline);
+      else
+        MathExtra::sub3(points[lines[j].p1].x,points[lines[j].p2].x,jline);
+      dotline = MathExtra::dot3(iline,jline);
+
+      inorm = lines[i].norm;
+      jnorm = lines[j].norm;
+      dotnorm = MathExtra::dot3(inorm,jnorm);
+    }
+    */
+  }
+
+  // NOTE: set flatthresh based on angle (degrees) set by user
+  // NOTE: need to order connections with FLAT first?
   // NOTE: error checks for zero-length lines, duplicate lines
   // NOTE: warn for too-small lines
-
+  // NOTE: alter connection info if 2 lines are different types ?
+  
   memory->destroy(counts);
   memory->destroy(plines);
 }

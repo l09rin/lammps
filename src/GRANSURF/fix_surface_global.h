@@ -141,14 +141,16 @@ class FixSurfaceGlobal : public Fix {
 
                               // ragged 2d arrays for 2d connectivity
   int **plines;               // indices of lines which contain each point
-  int **neigh_p1;
-  int **neigh_p2;
-  int **pwhich_p1;
-  int **pwhich_p2;
-  int **nside_p1;
-  int **nside_p2;
-  int **aflag_p1;
-  int **aflag_p2;
+  int **neigh_p1;             // indices of other lines connected to endpt1
+  int **pwhich_p1;            // which point (0/1) on other line is endpt1
+  int **nside_p1;             // consistency of other line normal
+                              //   SAME_SIDE or OPPOSITE_SIDE
+  int **aflag_p1;             // is this line + other line a FLAT,CONCAVE,CONVEX surf
+                              //   surf = on normal side of this line
+  int **neigh_p2;             // ditto for connections to endpt2
+  int **pwhich_p2;            // ditto for endpt2
+  int **nside_p2;             // ditto for endpt2
+  int **aflag_p2;             // ditto for endpt2
 
   int **elist;                // ragged 2d array for global tri edge lists
   int **clist;                // ragged 2d array for global tri corner pt lists
@@ -156,19 +158,18 @@ class FixSurfaceGlobal : public Fix {
   // 2d/3d connectivity
 
   struct Connect2d {      // line connectivity
-    int np1,np2;          // # of lines connected to pts 1,2 (NOT including self)
-    int *neigh_p1;        // indices of all lines connected to pt1
-    int *neigh_p2;        // ditto for pt2
-                          //   these are just pointers into plist
-    int *pwhich_p1;       // which pt (0,1) on each line connected to pt1
-    int *pwhich_p2;       // ditto for connected to pt2
-    int *nside_p1;        // normal flag for each line connected to pt1
-    int *nside_p2;        // ditto for connected to pt2
-                          //   nside = SAME_SIDE, OPPOSITE_SIDE
+    int np1,np2;          // # of lines connected to endpt1/2 (NOT including self)
+    int *neigh_p1;        // indices of lines connected to emdpt1
+    int *neigh_p2;        // ditto for connections to endpt2
+    int *pwhich_p1;       // which point (0,1) on other line is endpt1
+    int *pwhich_p2;       // ditto for endpt2
+    int *nside_p1;        // consitency of other line normal
+    int *nside_p2;        // ditto for endpt2
                           //   SAME_SIDE = 2 normals are on same side of surf
-                          //   OPPOSITE_SIDE = they are on opposite sides of surf
-    int *aflag_p1;        // angle flag for each line connected to pt1
-    int *aflag_p2;        // ditto for connected to pt2
+                          //   OPPOSITE_SIDE = opposite sides of surf
+    int *aflag_p1;        // is this line + other line a FLAT,CONCAVE,CONVEX surf
+    int *aflag_p2;        // ditto for endpt2
+                          //   surf = on normal side of this line
                           //   aflag = FLAT, CONCAVE, CONVEX
   };
 
