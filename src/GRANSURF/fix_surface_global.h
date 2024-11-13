@@ -70,7 +70,7 @@ class FixSurfaceGlobal : public Fix {
   char *tstr;
 
   // per-surf properties
-  
+
   double **xsurf,**vsurf,**omegasurf,*radsurf;
 
   double triggersq;
@@ -81,7 +81,7 @@ class FixSurfaceGlobal : public Fix {
   char **gnames;          // name of each group
   int *bitmask;           // one-bit mask for each group
   int *gmask;             // mask bits for each surf
-  
+
   // motion settings
 
   struct Motion {
@@ -187,6 +187,17 @@ class FixSurfaceGlobal : public Fix {
 
   Connect2d *connect2d;             // 2d connection info
   Connect3d *connect3d;             // 3d connection info
+
+  // struct for storing contact data
+
+  struct ContactingSurf {
+    int index, type;
+    double r[3];
+    double overlap;
+  };
+
+  ContactingSurf *contacting_surfs;
+  int nmaxcontacts;
 
   // data for DumpImage
 

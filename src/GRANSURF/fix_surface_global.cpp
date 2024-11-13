@@ -39,6 +39,7 @@
 #include "update.h"
 #include "variable.h"
 
+#include <algorithm>
 #include <map>
 #include <tuple>
 
@@ -62,6 +63,7 @@ enum{SAME_SIDE,OPPOSITE_SIDE};
 
 #define FLATTHRESH 0.01
 #define DELTA 128
+#define DELTACONTACTS 4
 
 /* ---------------------------------------------------------------------- */
 
@@ -187,6 +189,9 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
   xsurf = vsurf = omegasurf = nullptr;
   radsurf = nullptr;
 
+  contacting_surfs = nullptr;
+  nmaxcontacts = 0;
+
   nmax = 0;
   mass_rigid = nullptr;
 
@@ -259,6 +264,9 @@ FixSurfaceGlobal::~FixSurfaceGlobal()
 
   memory->sfree(connect2d);
   memory->sfree(connect3d);
+
+  memory->sfree(contacting_surfs);
+  memory->destroy(contacting_surfs);
 
   memory->destroy(xsurf);
   memory->destroy(vsurf);
@@ -629,7 +637,7 @@ void FixSurfaceGlobal::pre_neighbor()
 
 void FixSurfaceGlobal::post_force(int vflag)
 {
-  int i,j,k,ii,jj,inum,jnum,jflag,otherflag;
+  int i,j,k,ii,jj,inum,jnum,jflag,otherflag,ncontacts;
   double xtmp,ytmp,ztmp,radi,delx,dely,delz;
   double meff;
   int *ilist,*jlist,*numneigh,**firstneigh;
@@ -710,6 +718,7 @@ void FixSurfaceGlobal::post_force(int vflag)
       allhistory = firsthistory[i];
     }
 
+    ncontacts = 0;
     for (jj = 0; jj < jnum; jj++) {
       j = jlist[jj];
 
@@ -719,7 +728,7 @@ void FixSurfaceGlobal::post_force(int vflag)
       rsq = delx * delx + dely * dely + delz * delz;
 
       // skip contact check if particle/surf are too far apart
-      
+
       radsum = radi + radsurf[j];
       if (rsq > radsum * radsum) {
         if (use_history) {
@@ -774,10 +783,27 @@ void FixSurfaceGlobal::post_force(int vflag)
       }
 
       // append surf to list of contacts
-      
+      if (ncontacts + 1 > nmaxcontacts) {
+        nmaxcontacts += DELTACONTACTS;
+        memory->grow(contacting_surfs, nmaxcontacts * sizeof(ContactingSurf),
+                                      "surface/global:contacts");
+      }
+
+
+      if (dimension == 2) {
+        contacting_surfs[ncontacts].index = j;
+        contacting_surfs[ncontacts].type = lines[j].type;
+        contacting_surfs[ncontacts].overlap = sqrt(rsq) - radsum;
+        contacting_surfs[ncontacts].r[0] = dr[0];
+        contacting_surfs[ncontacts].r[1] = dr[1];
+        contacting_surfs[ncontacts].r[2] = dr[2];
+      }
+
+      ncontacts += 1;
     }
 
     // Reduce set of contacts
+    std::sort(contacting_surfs, contacting_surfs + ncontacts, [](ContactingSurf a, ContactingSurf b) {return a.overlap > b.overlap;});
 
     /*
     For contact in reduced contacts:
@@ -1663,7 +1689,7 @@ void FixSurfaceGlobal::connectivity2d_global()
   // allocate all ragged arrays which Connect2d will point to
   // first subtract self from each point's count
   //   b/c connect2d vectors will NOT include self
-  
+
   for (int i = 0; i < npoints; i++) counts[i]--;
 
   memory->create_ragged(neigh_p1,npoints,counts,"surface/global:neigh_p1");
@@ -1674,7 +1700,7 @@ void FixSurfaceGlobal::connectivity2d_global()
   memory->create_ragged(nside_p2,npoints,counts,"surface/global:nside_p2");
   memory->create_ragged(aflag_p1,npoints,counts,"surface/global:aflag_p1");
   memory->create_ragged(aflag_p2,npoints,counts,"surface/global:aflag_p2");
-  
+
   // set connect2d vector ptrs to rows of corresponding ragged arrays
 
   for (int i = 0; i < nlines; i++) {
@@ -1709,7 +1735,7 @@ void FixSurfaceGlobal::connectivity2d_global()
   // do NOT include self
 
   int j,m;
-  
+
   for (int i = 0; i < nlines; i++) {
     if (connect2d[i].np1) {
       j = 0;
@@ -1732,11 +1758,11 @@ void FixSurfaceGlobal::connectivity2d_global()
   // set connect2d pwhich/nside/aflag for each end point of each line
   // see fsg.h file for an explanation of each vector in Connect2d
   // aflag is based on dot and cross product of 2 connected line normals
-  
+
   double dotline,dotnorm;
   double *inorm,*jnorm;
   double icrossj[3];
-  
+
   for (int i = 0; i < nlines; i++) {
     for (m = 0; m < connect2d[i].np1; m++) {
       j = connect2d[i].neigh_p1[m];
@@ -1744,7 +1770,7 @@ void FixSurfaceGlobal::connectivity2d_global()
       inorm = lines[i].norm;
       jnorm = lines[j].norm;
       dotnorm = MathExtra::dot3(inorm,jnorm);
-      
+
       if (lines[i].p1 == lines[j].p1) {
         connect2d[i].pwhich_p1[j] = 0;
         connect2d[i].nside_p1[j] = OPPOSITE_SIDE;
@@ -1772,7 +1798,7 @@ void FixSurfaceGlobal::connectivity2d_global()
       inorm = lines[i].norm;
       jnorm = lines[j].norm;
       dotnorm = MathExtra::dot3(inorm,jnorm);
-      
+
       if (lines[i].p2 == lines[j].p1) {
         connect2d[i].pwhich_p2[j] = 0;
         connect2d[i].nside_p2[j] = SAME_SIDE;
@@ -1800,7 +1826,7 @@ void FixSurfaceGlobal::connectivity2d_global()
   // NOTE: error checks for zero-length lines, duplicate lines
   // NOTE: warn for too-small lines
   // NOTE: alter connection info if 2 lines are different types ?
-  
+
   memory->destroy(counts);
   memory->destroy(plines);
 }
@@ -1963,7 +1989,7 @@ void FixSurfaceGlobal::surface_attributes()
   double delta[3],p12[3],p13[3];
   double *p1,*p2,*p3;
   double zunit[3] = {0.0,0.0,1.0};
-    
+
   memory->create(xsurf,nsurf,3,"surface/global:xsurf");
   memory->create(vsurf,nsurf,3,"surface/global:vsurf");
   memory->create(omegasurf,nsurf,3,"surface/global:omegasurf");
@@ -1985,7 +2011,7 @@ void FixSurfaceGlobal::surface_attributes()
     }
 
   } else {
-    
+
     for (int i = 0; i < nsurf; i++) {
       p1 = points[tris[i].p1].x;
       p2 = points[tris[i].p2].x;
