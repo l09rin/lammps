@@ -163,7 +163,7 @@ class FixSurfaceGlobal : public Fix {
     int *neigh_p2;        // ditto for connections to endpt2
     int *pwhich_p1;       // which point (0,1) on other line is endpt1
     int *pwhich_p2;       // ditto for endpt2
-    int *nside_p1;        // consitency of other line normal
+    int *nside_p1;        // consistency of other line normal
     int *nside_p2;        // ditto for endpt2
                           //   SAME_SIDE = 2 normals are on same side of surf
                           //   OPPOSITE_SIDE = opposite sides of surf

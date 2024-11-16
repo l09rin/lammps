@@ -643,7 +643,7 @@ void FixSurfaceGlobal::pre_neighbor()
 
 void FixSurfaceGlobal::post_force(int vflag)
 {
-  int i,j,k,ii,jj,inum,jnum,jflag,otherflag;
+  int i,j,k,n,m,ii,jj,inum,jnum,jflag,otherflag;
   int n_contact_surfs, n_contact_forces;
   double xtmp,ytmp,ztmp,radi,delx,dely,delz;
   double meff;
@@ -792,12 +792,12 @@ void FixSurfaceGlobal::post_force(int vflag)
       }
 
       // append surf to list of contacts
+
       if (n_contact_surfs + 1 > nmax_contact_surfs) {
         nmax_contact_surfs += DELTACONTACTS;
         memory->grow(contact_surfs, nmax_contact_surfs * sizeof(ContactSurf),
                                       "surface/global:contact_surfs");
       }
-
 
       if (dimension == 2) {
         contact_surfs[n_contact_surfs].index = j;
@@ -817,10 +817,33 @@ void FixSurfaceGlobal::post_force(int vflag)
     n_contact_forces = 0;
     processed_contacts.clear();
 
-    for (j = 0; j < n_contact_surfs; j++) {
-      if (processed_contacts.find(int) != processed_contacts.end()) continue;
-      processed_contacts.contact_surfs.insert(j);
+    for (n = 0; n < n_contact_surfs; n++) {
+      j = contact_surfs[n].index;
 
+      if (processed_contacts.find(j) != processed_contacts.end()) continue;
+      processed_contacts.insert(j);
+
+      n_contact_forces += 1;
+
+      if (n_contact_forces + 1 > nmax_contact_forces) {
+        nmax_contact_forces += DELTACONTACTS;
+        memory->grow(contact_forces, nmax_contact_forces * sizeof(ContactForce),
+                                      "surface/global:contact_forces");
+      }
+
+      if (dimension == 2) {
+        for (m = 0; m < connect2d[j].np1; m++) {
+          k = connect2d[j].neigh_p1[m];
+          //append to connected_surfs
+        }
+        for (m = 0; m < connect2d[j].np2; m++) {
+          k = connect2d[j].neigh_p2[m];
+        }
+
+        // loop through connected surfs...
+      } else {
+        continue; // 2d to start
+      }
     }
 
 
