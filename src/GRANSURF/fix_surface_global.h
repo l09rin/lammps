@@ -140,49 +140,93 @@ class FixSurfaceGlobal : public Fix {
   int nsurf;                  // count of lines or tris for 2d/3d
 
                               // ragged 2d arrays for 2d connectivity
-  int **plines;               // indices of lines which contain each point
-  int **neigh_p1;             // indices of other lines connected to endpt1
-  int **pwhich_p1;            // which point (0/1) on other line is endpt1
+  int **plines;               // indices of lines which contain each end point
+  int **neigh_p1;             // indices of other lines connected to endpt 1
+  int **pwhich_p1;            // which point (0/1) on other line is endpt 1
   int **nside_p1;             // consistency of other line normal
                               //   SAME_SIDE or OPPOSITE_SIDE
   int **aflag_p1;             // is this line + other line a FLAT,CONCAVE,CONVEX surf
                               //   surf = on normal side of this line
-  int **neigh_p2;             // ditto for connections to endpt2
-  int **pwhich_p2;            // ditto for endpt2
-  int **nside_p2;             // ditto for endpt2
-  int **aflag_p2;             // ditto for endpt2
+  int **neigh_p2;             // ditto for connections to endpt 2
+  int **pwhich_p2;            // ditto for endpt 2
+  int **nside_p2;             // ditto for endpt 2
+  int **aflag_p2;             // ditto for endpt 2
 
-  int **elist;                // ragged 2d array for global tri edge lists
-  int **clist;                // ragged 2d array for global tri corner pt lists
+                              // ragged 2d arrays for 3d edge connectivity
+  int **etris;                // indices of tris which contain each edge
+  int **neigh_e1;             // indices of other tris connected to edge 1
+  int **ewhich_e1;            // which edge (0/1/2) on other tri is edge 1
+  int **nside_e1;             // consistency of other line normal
+                              //   SAME_SIDE or OPPOSITE_SIDE
+  int **aflag_e1;             // is this tri + other tri a FLAT,CONCAVE,CONVEX surf
+                              //   surf = on normal side of this tri
+  int **neigh_e2;             // ditto for connections to edge 2
+  int **ewhich_e2;            // ditto for edge 2
+  int **nside_e2;             // ditto for edge 2
+  int **aflag_e2;             // ditto for edge 2
+  int **neigh_e3;             // ditto for connections to edge 3
+  int **ewhich_e3;            // ditto for edge 3
+  int **nside_e3;             // ditto for edge 3
+  int **aflag_e3;             // ditto for edge 3
+
+                              // ragged 2d arrays for 3d corner connectivity
+  int **ctris;                // indices of tris which contain each corner point
+  int **neigh_c1;             // indices of other tris connected to cpt 1
+  int **cwhich_c1;            // which corner point (0/1/2) on other tri is cpt 1
+  int **neigh_c2;             // indices of other tris connected to cpt 21
+  int **cwhich_c2;            // which corner point (0/1/2) on other tri is cpt 2
+  int **neigh_c3;             // indices of tris connected to cpt 3
+  int **cwhich_c3;            // which coner point (0/1/2) on other tri is cpt 3
 
   // 2d/3d connectivity
 
   struct Connect2d {      // line connectivity
-    int np1,np2;          // # of lines connected to endpt1/2 (NOT including self)
-    int *neigh_p1;        // indices of lines connected to emdpt1
-    int *neigh_p2;        // ditto for connections to endpt2
-    int *pwhich_p1;       // which point (0,1) on other line is endpt1
-    int *pwhich_p2;       // ditto for endpt2
+    int np1,np2;          // # of lines connected to endpts 1/2 (NOT including self)
+
+                          // pairs of endpoint connections
+    int *neigh_p1;        // indices of lines connected to endpt 1
+    int *neigh_p2;        // ditto for connections to endpt 2
+    int *pwhich_p1;       // which point (0,1) on other line is endpt 1
+    int *pwhich_p2;       // ditto for endpt 2
     int *nside_p1;        // consitency of other line normal
-    int *nside_p2;        // ditto for endpt2
+    int *nside_p2;        // ditto for endpt 2
                           //   SAME_SIDE = 2 normals are on same side of surf
                           //   OPPOSITE_SIDE = opposite sides of surf
     int *aflag_p1;        // is this line + other line a FLAT,CONCAVE,CONVEX surf
-    int *aflag_p2;        // ditto for endpt2
+    int *aflag_p2;        // ditto for endpt 2
                           //   surf = on normal side of this line
                           //   aflag = FLAT, CONCAVE, CONVEX
   };
 
   struct Connect3d {      // tri connectivity
-    int ne1,ne2,ne3;      // # of tris connected to edges 1,2,3 (including self)
-    int nc1,nc2,nc3;      // # of tris connected to corner pts 1,2,3 (including self)
-    int *neigh_e1;        // indices of all tris connected to 1-2 edge (if ne1 > 1)
-    int *neigh_e2;        // ditto for 2-3 edge
-    int *neigh_e3;        // ditto for 3-1 edge
-    int *neigh_c1;        // indices of all tris connected to corner pt 1 (if nc1 > 1)
-    int *neigh_c2;        // ditto for corner pt 2
-    int *neigh_c3;        // ditto for corner pt 3
-    int flags;            // future flags for edge and corner pt coupling
+    int ne1,ne2,ne3;      // # of tris connected to edges 1,2,3 (NOT including self)
+    int nc1,nc2,nc3;      // # of tris connected to corner pts 1,2,3 (NOT self)
+
+                          // pairs of edge connections
+    int *neigh_e1;        // indices of tris connected to edge 1
+    int *neigh_e2;        // ditto for connections to edge 2
+    int *neigh_e3;        // ditto for connections to edge 3
+    int *ewhich_e1;       // which edge (0,1,2) on other tri shares edge 1
+    int *ewhich_e2;       // ditto for edge 2
+    int *ewhich_e3;       // ditto for edge 3
+    int *nside_e1;        // consitency of other tri normal
+    int *nside_e2;        // ditto for edge 2
+    int *nside_e3;        // ditto for edge 3
+                          //   SAME_SIDE = 2 normals are on same side of surf
+                          //   OPPOSITE_SIDE = opposite sides of surf
+    int *aflag_e1;        // is this tri + other tri a FLAT,CONCAVE,CONVEX surf
+    int *aflag_e2;        // ditto for edge 2
+    int *aflag_e3;        // ditto for edge 3
+                          //   surf = on normal side of this tri
+                          //   aflag = FLAT, CONCAVE, CONVEX
+
+                          // pairs of corner pt connections
+    int *neigh_c1;        // indices of tris connected to corner pt 1
+    int *neigh_c2;        // ditto for connections to corner pt 2
+    int *neigh_c3;        // ditto for connections to corner pt 3
+    int *cwhich_c1;       // which corner pt (0,1,2) on other tri shares corner pt 1
+    int *cwhich_c2;       // ditto for corner pt 2
+    int *cwhich_c3;       // ditto for corner pt 3
   };
 
   Connect2d *connect2d;             // 2d connection info

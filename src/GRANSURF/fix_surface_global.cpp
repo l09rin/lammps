@@ -12,6 +12,14 @@
    See the README file in the top-level LAMMPS directory.
 ------------------------------------------------------------------------- */
 
+// for both lines and tris:
+// NOTE: set flatthresh based on angle (degrees) set by user
+// NOTE: need to order connections with FLAT first?
+// NOTE: error checks for zero-length lines, duplicate lines
+// NOTE: warn for too-small lines
+// NOTE: alter connection info if 2 lines are different types ?
+// MOTE: how to set molecue ID and type for STL and molecule input
+
 #include "fix_surface_global.h"
 
 #include "atom.h"
@@ -180,8 +188,12 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
   nside_p1 = nside_p2 = nullptr;
   aflag_p1 = aflag_p2 = nullptr;
 
-  elist = nullptr;
-  clist = nullptr;
+  neigh_e1 = neigh_e2 = neigh_e3 = nullptr;
+  ewhich_e1 = ewhich_e2 = ewhich_e3 = nullptr;
+  nside_e1 = nside_e2 = nside_e3 =nullptr;
+  aflag_e1 = aflag_e2 = aflag_e3 = nullptr;
+  neigh_c1 = neigh_c2 = neigh_c3 = nullptr;
+  cwhich_c1 = cwhich_c2 = cwhich_c3 = nullptr;
 
   connect2d = nullptr;
   connect3d = nullptr;
@@ -259,8 +271,25 @@ FixSurfaceGlobal::~FixSurfaceGlobal()
   memory->destroy(aflag_p1);
   memory->destroy(aflag_p2);
 
-  memory->destroy(elist);
-  memory->destroy(clist);
+  memory->destroy(neigh_e1);
+  memory->destroy(neigh_e2);
+  memory->destroy(neigh_e3);
+  memory->destroy(ewhich_e1);
+  memory->destroy(ewhich_e2);
+  memory->destroy(ewhich_e3);
+  memory->destroy(nside_e1);
+  memory->destroy(nside_e2);
+  memory->destroy(nside_e3);
+  memory->destroy(aflag_e1);
+  memory->destroy(aflag_e2);
+  memory->destroy(aflag_e3);
+  
+  memory->destroy(neigh_c1);
+  memory->destroy(neigh_c2);
+  memory->destroy(neigh_c3);
+  memory->destroy(cwhich_c1);
+  memory->destroy(cwhich_c2);
+  memory->destroy(cwhich_c3);
 
   memory->sfree(connect2d);
   memory->sfree(connect3d);
@@ -1663,12 +1692,12 @@ void FixSurfaceGlobal::connectivity2d_global()
     memory->smalloc(nlines*sizeof(Connect2d),
                     "surface/global:connect2d");
 
-  // setup end point connectivity lists
+  // setup line end point connectivity lists
   // count # of lines containing each end point (including self)
   // plines = ragged 2d array with indices of lines which contain each point
 
   int *counts;
-  memory->create(counts,npoints,"surface/global:count");
+  memory->create(counts,npoints,"surface/global:counts");
 
   for (int i = 0; i < npoints; i++) counts[i] = 0;
 
@@ -1688,7 +1717,7 @@ void FixSurfaceGlobal::connectivity2d_global()
 
   // allocate all ragged arrays which Connect2d will point to
   // first subtract self from each point's count
-  //   b/c connect2d vectors will NOT include self
+  //   b/c connect3d vectors will NOT include self
 
   for (int i = 0; i < npoints; i++) counts[i]--;
 
@@ -1731,7 +1760,7 @@ void FixSurfaceGlobal::connectivity2d_global()
     }
   }
 
-  // set connect2d neigh for each end point of each line
+  // initialize connect2d neigh vectors for each end point of each line
   // do NOT include self
 
   int j,m;
@@ -1754,10 +1783,16 @@ void FixSurfaceGlobal::connectivity2d_global()
       }
     }
   }
+  
+  // deallocate counts and plines
+  
+  memory->destroy(counts);
+  memory->destroy(plines);
 
   // set connect2d pwhich/nside/aflag for each end point of each line
   // see fsg.h file for an explanation of each vector in Connect2d
   // aflag is based on dot and cross product of 2 connected line normals
+  //   cross product is either along +z or -z direction
 
   double dotline,dotnorm;
   double *inorm,*jnorm;
@@ -1820,20 +1855,11 @@ void FixSurfaceGlobal::connectivity2d_global()
       }
     }
   }
-
-  // NOTE: set flatthresh based on angle (degrees) set by user
-  // NOTE: need to order connections with FLAT first?
-  // NOTE: error checks for zero-length lines, duplicate lines
-  // NOTE: warn for too-small lines
-  // NOTE: alter connection info if 2 lines are different types ?
-
-  memory->destroy(counts);
-  memory->destroy(plines);
 }
 
 /* ----------------------------------------------------------------------
    create and initialize Connect3d info for all triangles
-   this creates elist/clist and connect3d data structs
+   this creates etris/ctris and connect3d data structs
 ------------------------------------------------------------------------- */
 
 void FixSurfaceGlobal::connectivity3d_global()
@@ -1843,12 +1869,15 @@ void FixSurfaceGlobal::connectivity3d_global()
   connect3d = (Connect3d *)
     memory->smalloc(ntris*sizeof(Connect3d),
                     "surface/global:connect3d");
+
+  // create hash = map of unique edges
+  //   key = <p1,p2> indices of 2 points, in either order
+  //   value = index of the unique edge (0 to Nedge-1)
+  // tri2edges[i][j] = index of unique edge for tri I and edge J
+  // nedges = total count of unique edges
+
   int **tri2edge;
   memory->create(tri2edge,ntris,3,"surfface/global::tri2edge");
-
-  // create a map
-  // key = <p1,p2> indices of 2 points, in either order
-  // value = index into count of unique edges
 
   std::map<std::tuple<int,int>,int> hash;
   int nedges = 0;
@@ -1893,10 +1922,8 @@ void FixSurfaceGlobal::connectivity3d_global()
   }
 
   // setup tri edge connectivity lists
-  // count # of tris containing each edge
-  // create ragged 2d array to contain all edge indices, then fill it
-  // set neigh_e123 vector ptrs in connect3d to rows of ragged array
-  // ne123 counts and vectors include self tri
+  // count # of tris containing each edge (including self)
+  // etris = ragged 2d array with indices of tris which contain each edge
 
   int *counts;
   memory->create(counts,nedges,"surface/global:count");
@@ -1908,41 +1935,269 @@ void FixSurfaceGlobal::connectivity3d_global()
     counts[tri2edge[i][1]]++;
     counts[tri2edge[i][2]]++;
   }
-
-  memory->create_ragged(elist,nedges,counts,"surface/global:elist");
+  
+  memory->create_ragged(etris,nedges,counts,"surface/global:etris");
 
   for (int i = 0; i < nedges; i++) counts[i] = 0;
 
   for (int i = 0; i < ntris; i++) {
-    elist[tri2edge[i][0]][counts[tri2edge[i][0]]++] = i;
-    elist[tri2edge[i][1]][counts[tri2edge[i][1]]++] = i;
-    elist[tri2edge[i][2]][counts[tri2edge[i][2]]++] = i;
+    etris[tri2edge[i][0]][counts[tri2edge[i][0]]++] = i;
+    etris[tri2edge[i][1]][counts[tri2edge[i][1]]++] = i;
+    etris[tri2edge[i][2]][counts[tri2edge[i][2]]++] = i;
   }
 
+  // allocate all edge ragged arrays which Connect3d will point to
+  // first subtract self from each edge's count
+  //   b/c connect3d vectors will NOT include self
+
+  for (int i = 0; i < nedges; i++) counts[i]--;
+
+  memory->create_ragged(neigh_e1,nedges,counts,"surface/global:neigh_e1");
+  memory->create_ragged(neigh_e2,nedges,counts,"surface/global:neigh_e2");
+  memory->create_ragged(neigh_e3,nedges,counts,"surface/global:neigh_e3");
+  memory->create_ragged(ewhich_e1,nedges,counts,"surface/global:ewhich_e1");
+  memory->create_ragged(ewhich_e2,nedges,counts,"surface/global:ewhich_e2");
+  memory->create_ragged(ewhich_e3,nedges,counts,"surface/global:ewhich_e3");
+  memory->create_ragged(nside_e1,nedges,counts,"surface/global:nside_e1");
+  memory->create_ragged(nside_e2,nedges,counts,"surface/global:nside_e2");
+  memory->create_ragged(nside_e3,nedges,counts,"surface/global:nside_e3");
+  memory->create_ragged(aflag_e1,nedges,counts,"surface/global:aflag_e1");
+  memory->create_ragged(aflag_e2,nedges,counts,"surface/global:aflag_e2");
+  memory->create_ragged(aflag_e3,nedges,counts,"surface/global:aflag_e3");
+
+  // set connect3d edge vector ptrs to rows of corresponding ragged arrays
+  
   for (int i = 0; i < ntris; i++) {
     connect3d[i].ne1 = counts[tri2edge[i][0]];
-    if (connect3d[i].ne1 == 1) connect3d[i].neigh_e1 = nullptr;
-    else connect3d[i].neigh_e1 = elist[tri2edge[i][0]];
+    if (connect3d[i].ne1 == 0) {
+      connect3d[i].neigh_e1 = nullptr;
+      connect3d[i].ewhich_e1 = nullptr;
+      connect3d[i].nside_e1 = nullptr;
+      connect3d[i].aflag_e1 = nullptr;
+    } else {
+      connect3d[i].neigh_e1 = neigh_e1[tri2edge[i][0]];
+      connect3d[i].ewhich_e1 = ewhich_e1[tri2edge[i][0]];
+      connect3d[i].nside_e1 = nside_e1[tri2edge[i][0]];
+      connect3d[i].aflag_e1 = aflag_e1[tri2edge[i][0]];
+    }
 
     connect3d[i].ne2 = counts[tri2edge[i][1]];
-    if (connect3d[i].ne2 == 1) connect3d[i].neigh_e2 = nullptr;
-    else connect3d[i].neigh_e2 = elist[tri2edge[i][1]];
+    if (connect3d[i].ne2 == 0) {
+      connect3d[i].neigh_e2 = nullptr;
+      connect3d[i].ewhich_e2 = nullptr;
+      connect3d[i].nside_e2 = nullptr;
+      connect3d[i].aflag_e2 = nullptr;
+    } else {
+      connect3d[i].neigh_e2 = neigh_e2[tri2edge[i][1]];
+      connect3d[i].ewhich_e2 = ewhich_e2[tri2edge[i][1]];
+      connect3d[i].nside_e2 = nside_e2[tri2edge[i][1]];
+      connect3d[i].aflag_e2 = aflag_e2[tri2edge[i][1]];
+    }
 
     connect3d[i].ne3 = counts[tri2edge[i][2]];
-    if (connect3d[i].ne3 == 1) connect3d[i].neigh_e3 = nullptr;
-    else connect3d[i].neigh_e3 = elist[tri2edge[i][2]];
+    if (connect3d[i].ne3 == 0) {
+      connect3d[i].neigh_e3 = nullptr;
+      connect3d[i].ewhich_e3 = nullptr;
+      connect3d[i].nside_e3 = nullptr;
+      connect3d[i].aflag_e3 = nullptr;
+    } else {
+      connect3d[i].neigh_e3 = neigh_e3[tri2edge[i][2]];
+      connect3d[i].ewhich_e3 = ewhich_e3[tri2edge[i][2]];
+      connect3d[i].nside_e3 = nside_e3[tri2edge[i][2]];
+      connect3d[i].aflag_e3 = aflag_e3[tri2edge[i][2]];
+    }
   }
 
+  // initialize connect3d edge neigh vectors for each edge of each tri
+  // do NOT include self
+
+  int j,m;
+
+  for (int i = 0; i < ntris; i++) {
+    if (connect3d[i].ne1) {
+      j = 0;
+      for (m = 0; m <= connect3d[i].ne1; m++) {
+        if (etris[tri2edge[i][0]][m] == i) continue;
+        connect3d[i].neigh_e1[j] = etris[tri2edge[i][0]][m];
+        j++;
+      }
+    }
+    if (connect3d[i].ne2) {
+      j = 0;
+      for (m = 0; m <= connect3d[i].ne2; m++) {
+        if (etris[tri2edge[i][1]][m] == i) continue;
+        connect3d[i].neigh_e2[j] = etris[tri2edge[i][1]][m];
+        j++;
+      }
+    }
+    if (connect3d[i].ne3) {
+      j = 0;
+      for (m = 0; m <= connect3d[i].ne3; m++) {
+        if (etris[tri2edge[i][2]][m] == i) continue;
+        connect3d[i].neigh_e3[j] = etris[tri2edge[i][2]][m];
+        j++;
+      }
+    }
+  }
+  
+  // deallocate counts, tri2edge, etris
+  
   memory->destroy(counts);
   memory->destroy(tri2edge);
+  memory->destroy(etris);
 
-  // setup corner point connectivity lists
-  // count # of tris containing each point
-  // create ragged 2d array to contain all tri indices, then fill it
-  // set neigh_c123 vector ptrs in connect3d to rows of ragged array
-  // nc123 counts and vectors include self tri
+  // set connect3d edge ewhich/nside/aflag for each edge of each tri
+  // see fsg.h file for an explanation of each edge vector in Connect3d
+  // aflag is based on dot and cross product of 2 connected tri normals
+  //   cross product is either along itri edge or in opposite dir
 
-  memory->create(counts,npoints,"surface/global:count");
+  int jpfirst,jpsecond;
+  double dotline,dotnorm;
+  double *inorm,*jnorm;
+  double icrossj[3],iedge[3];
+
+  for (int i = 0; i < ntris; i++) {
+    for (m = 0; m < connect3d[i].ne1; m++) {
+      j = connect3d[i].neigh_e1[m];
+
+      if (tris[i].p1 == tris[j].p1) jpfirst = 1;
+      else if (tris[i].p1 == tris[j].p2) jpfirst = 2;
+      else if (tris[i].p1 == tris[j].p3) jpfirst = 3;
+
+      if (tris[i].p2 == tris[j].p1) jpsecond = 1;
+      else if (tris[i].p2 == tris[j].p2) jpsecond = 2;
+      else if (tris[i].p2 == tris[j].p3) jpsecond = 3;
+
+      inorm = tris[i].norm;
+      jnorm = tris[j].norm;
+      dotnorm = MathExtra::dot3(inorm,jnorm);
+      MathExtra::sub3(points[tris[i].p2].x,points[tris[i].p1].x,iedge);
+      
+      if ((jpfirst == 1 && jpsecond == 2) ||
+	  (jpfirst == 2 && jpsecond == 3) ||
+	  (jpfirst == 3 && jpsecond == 1)) {
+	connect3d[i].ewhich_e1[j] = jpfirst - 1;
+	connect3d[i].nside_e1[j] = OPPOSITE_SIDE;
+	if (dotnorm < -1.0+FLATTHRESH) connect3d[i].aflag_e1[j] = FLAT;
+	else {
+	  MathExtra::cross3(inorm,jnorm,icrossj);
+	  if (MathExtra::dot3(icrossj,iedge) > 0.0)
+	    connect3d[i].aflag_e1[j] = CONCAVE;
+	  else
+	    connect3d[i].aflag_e1[j] = CONVEX;
+	}
+      } else {
+	if (jpfirst == 2) connect3d[i].ewhich_e1[j] = 0;
+	else if (jpfirst == 3) connect3d[i].ewhich_e1[j] = 1;
+	else if (jpfirst == 1) connect3d[i].ewhich_e1[j] = 2;
+	connect3d[i].nside_e1[j] = SAME_SIDE;
+        if (dotnorm > 1.0-FLATTHRESH) connect3d[i].aflag_e1[j] = FLAT;
+        else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+          if (MathExtra::dot3(icrossj,iedge) < 0.0)
+	    connect3d[i].aflag_e1[j] = CONCAVE;
+          else
+	    connect3d[i].aflag_e1[j] = CONVEX;
+        }
+      }
+    }
+
+    for (m = 0; m < connect3d[i].ne2; m++) {
+      j = connect3d[i].neigh_e2[m];
+
+      if (tris[i].p2 == tris[j].p1) jpfirst = 1;
+      else if (tris[i].p2 == tris[j].p2) jpfirst = 2;
+      else if (tris[i].p2 == tris[j].p3) jpfirst = 3;
+
+      if (tris[i].p3 == tris[j].p1) jpsecond = 1;
+      else if (tris[i].p3 == tris[j].p2) jpsecond = 2;
+      else if (tris[i].p3 == tris[j].p3) jpsecond = 3;
+
+      inorm = tris[i].norm;
+      jnorm = tris[j].norm;
+      dotnorm = MathExtra::dot3(inorm,jnorm);
+      MathExtra::sub3(points[tris[i].p3].x,points[tris[i].p2].x,iedge);
+
+      if ((jpfirst == 1 && jpsecond == 2) ||
+	  (jpfirst == 2 && jpsecond == 3) ||
+	  (jpfirst == 3 && jpsecond == 1)) {
+	connect3d[i].ewhich_e2[j] = jpfirst - 1;
+	connect3d[i].nside_e2[j] = OPPOSITE_SIDE;
+	if (dotnorm < -1.0+FLATTHRESH) connect3d[i].aflag_e2[j] = FLAT;
+	else {
+	  MathExtra::cross3(inorm,jnorm,icrossj);
+	  if (MathExtra::dot3(icrossj,iedge) > 0.0)
+	    connect3d[i].aflag_e2[j] = CONCAVE;
+	  else
+	    connect3d[i].aflag_e2[j] = CONVEX;
+	}
+      } else {
+	if (jpfirst == 2) connect3d[i].ewhich_e2[j] = 0;
+	else if (jpfirst == 3) connect3d[i].ewhich_e2[j] = 1;
+	else if (jpfirst == 1) connect3d[i].ewhich_e2[j] = 2;
+	connect3d[i].nside_e2[j] = SAME_SIDE;
+        if (dotnorm > 1.0-FLATTHRESH) connect3d[i].aflag_e2[j] = FLAT;
+        else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+          if (MathExtra::dot3(icrossj,iedge) < 0.0)
+	    connect3d[i].aflag_e2[j] = CONCAVE;
+          else
+	    connect3d[i].aflag_e2[j] = CONVEX;
+        }
+      }
+    }
+    
+    for (m = 0; m < connect3d[i].ne3; m++) {
+      j = connect3d[i].neigh_e3[m];
+
+      if (tris[i].p3 == tris[j].p1) jpfirst = 1;
+      else if (tris[i].p3 == tris[j].p2) jpfirst = 2;
+      else if (tris[i].p3 == tris[j].p3) jpfirst = 3;
+
+      if (tris[i].p1 == tris[j].p1) jpsecond = 1;
+      else if (tris[i].p1 == tris[j].p2) jpsecond = 2;
+      else if (tris[i].p1 == tris[j].p3) jpsecond = 3;
+
+      inorm = tris[i].norm;
+      jnorm = tris[j].norm;
+      dotnorm = MathExtra::dot3(inorm,jnorm);
+      MathExtra::sub3(points[tris[i].p1].x,points[tris[i].p3].x,iedge);
+
+      if ((jpfirst == 1 && jpsecond == 2) ||
+	  (jpfirst == 2 && jpsecond == 3) ||
+	  (jpfirst == 3 && jpsecond == 1)) {
+	connect3d[i].ewhich_e3[j] = jpfirst - 1;
+	connect3d[i].nside_e3[j] = OPPOSITE_SIDE;
+	if (dotnorm < -1.0+FLATTHRESH) connect3d[i].aflag_e3[j] = FLAT;
+	else {
+	  MathExtra::cross3(inorm,jnorm,icrossj);
+	  if (MathExtra::dot3(icrossj,iedge) > 0.0)
+	    connect3d[i].aflag_e3[j] = CONCAVE;
+	  else
+	    connect3d[i].aflag_e3[j] = CONVEX;
+	}
+      } else {
+	if (jpfirst == 2) connect3d[i].ewhich_e3[j] = 0;
+	else if (jpfirst == 3) connect3d[i].ewhich_e3[j] = 1;
+	else if (jpfirst == 1) connect3d[i].ewhich_e3[j] = 2;
+	connect3d[i].nside_e3[j] = SAME_SIDE;
+        if (dotnorm > 1.0-FLATTHRESH) connect3d[i].aflag_e3[j] = FLAT;
+        else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+	  if (MathExtra::dot3(icrossj,iedge) < 0.0)
+	    connect3d[i].aflag_e3[j] = CONCAVE;
+          else
+	    connect3d[i].aflag_e3[j] = CONVEX;
+        }
+      }
+    }
+  }
+      
+  // setup tri corner point connectivity lists
+  // count # of tris containing each corner point (including self)
+  // ctris =  ragged 2d array with indices of tris which contain each point
+
+  memory->create(counts,npoints,"surface/global:counts");
 
   for (int i = 0; i < npoints; i++) counts[i] = 0;
 
@@ -1952,31 +2207,117 @@ void FixSurfaceGlobal::connectivity3d_global()
     counts[tris[i].p3]++;
   }
 
-  memory->create_ragged(clist,npoints,counts,"surface/global:clist");
+  memory->create_ragged(ctris,npoints,counts,"surface/global:ctris");
 
   for (int i = 0; i < npoints; i++) counts[i] = 0;
 
   for (int i = 0; i < ntris; i++) {
-    clist[tris[i].p1][counts[tris[i].p1]++] = i;
-    clist[tris[i].p2][counts[tris[i].p2]++] = i;
-    clist[tris[i].p3][counts[tris[i].p3]++] = i;
+    ctris[tris[i].p1][counts[tris[i].p1]++] = i;
+    ctris[tris[i].p2][counts[tris[i].p2]++] = i;
+    ctris[tris[i].p3][counts[tris[i].p3]++] = i;
   }
+
+  // allocate all ragged corner arrays which Connect2d will point to
+  // first subtract self from each point's count
+  //   b/c connect2d vectors will NOT include self
+
+  memory->create_ragged(neigh_c1,npoints,counts,"surface/global:neigh_c1");
+  memory->create_ragged(neigh_c2,npoints,counts,"surface/global:neigh_c2");
+  memory->create_ragged(neigh_c3,npoints,counts,"surface/global:neigh_c3");
+  memory->create_ragged(cwhich_c1,npoints,counts,"surface/global:cwhich_c1");
+  memory->create_ragged(cwhich_c2,npoints,counts,"surface/global:cwhich_c2");
+  memory->create_ragged(cwhich_c3,npoints,counts,"surface/global:cwhich_c3");
+
+  // set connect3d corner vector ptrs to rows of corresponding ragged arrays
 
   for (int i = 0; i < ntris; i++) {
     connect3d[i].nc1 = counts[tris[i].p1];
-    if (connect3d[i].nc1 == 1) connect3d[i].neigh_c1 = nullptr;
-    else connect3d[i].neigh_c1 = clist[tris[i].p1];
+    if (connect3d[i].nc1 == 0) {
+      connect3d[i].neigh_c1 = nullptr;
+      connect3d[i].cwhich_c1 = nullptr;
+    } else {
+      connect3d[i].neigh_c1 = neigh_c1[tris[i].p1];
+      connect3d[i].cwhich_c1 = cwhich_c1[tris[i].p1];
+    }
 
     connect3d[i].nc2 = counts[tris[i].p2];
-    if (connect3d[i].nc2 == 1) connect3d[i].neigh_c2 = nullptr;
-    else connect3d[i].neigh_c2 = clist[tris[i].p2];
+    if (connect3d[i].nc2 == 0) {
+      connect3d[i].neigh_c2 = nullptr;
+      connect3d[i].cwhich_c2 = nullptr;
+    } else {
+      connect3d[i].neigh_c2 = neigh_c2[tris[i].p2];
+      connect3d[i].cwhich_c2 = cwhich_c2[tris[i].p2];
+    }
 
     connect3d[i].nc3 = counts[tris[i].p3];
-    if (connect3d[i].nc3 == 1) connect3d[i].neigh_c3 = nullptr;
-    else connect3d[i].neigh_c3 = clist[tris[i].p3];
+    if (connect3d[i].nc3 == 0) {
+      connect3d[i].neigh_c3 = nullptr;
+      connect3d[i].cwhich_c3 = nullptr;
+    } else {
+      connect3d[i].neigh_c3 = neigh_c3[tris[i].p3];
+      connect3d[i].cwhich_c3 = cwhich_c3[tris[i].p3];
+    }
   }
 
+  // initialize connect3d corner neigh vectors for each corner point of each tri
+  // do NOT include self
+
+  for (int i = 0; i < ntris; i++) {
+    if (connect3d[i].nc1) {
+      j = 0;
+      for (m = 0; m <= connect3d[i].nc1; m++) {
+        if (ctris[tris[i].p1][m] == i) continue;
+        connect3d[i].neigh_c1[j] = ctris[tris[i].p1][m];
+        j++;
+      }
+    }
+    if (connect3d[i].nc2) {
+      j = 0;
+      for (m = 0; m <= connect3d[i].nc2; m++) {
+        if (ctris[tris[i].p2][m] == i) continue;
+        connect3d[i].neigh_c2[j] = ctris[tris[i].p2][m];
+        j++;
+      }
+    }
+    if (connect3d[i].nc3) {
+      j = 0;
+      for (m = 0; m <= connect3d[i].nc3; m++) {
+        if (ctris[tris[i].p3][m] == i) continue;
+        connect3d[i].neigh_c3[j] = ctris[tris[i].p3][m];
+        j++;
+      }
+    }
+  }
+
+  // deallocate counts and ctris
+  
   memory->destroy(counts);
+  memory->destroy(ctris);
+
+  // set connect3d cwhich for each end point of each line
+  // see fsg.h file for an explanation of each corner vector in Connect3d
+  // aflag is based on dot and cross product of 2 connected line normals
+
+  for (int i = 0; i < ntris; i++) {
+    for (m = 0; m < connect3d[i].nc1; m++) {
+      j = connect3d[i].neigh_c1[m];
+      if (tris[i].p1 == tris[j].p1) connect3d[i].cwhich_c1[j] = 0;
+      else if (tris[i].p1 == tris[j].p2) connect3d[i].cwhich_c1[j] = 1;
+      else if (tris[i].p1 == tris[j].p3) connect3d[i].cwhich_c1[j] = 2;
+    }
+    for (m = 0; m < connect3d[i].nc2; m++) {
+      j = connect3d[i].neigh_c2[m];
+      if (tris[i].p2 == tris[j].p1) connect3d[i].cwhich_c2[j] = 0;
+      else if (tris[i].p2 == tris[j].p2) connect3d[i].cwhich_c2[j] = 1;
+      else if (tris[i].p2 == tris[j].p3) connect3d[i].cwhich_c2[j] = 2;
+    }
+    for (m = 0; m < connect3d[i].nc3; m++) {
+      j = connect3d[i].neigh_c3[m];
+      if (tris[i].p3 == tris[j].p1) connect3d[i].cwhich_c3[j] = 0;
+      else if (tris[i].p3 == tris[j].p2) connect3d[i].cwhich_c3[j] = 1;
+      else if (tris[i].p3 == tris[j].p3) connect3d[i].cwhich_c3[j] = 2;
+    }
+  }
 }
 
 /* ----------------------------------------------------------------------
