@@ -42,6 +42,7 @@
 #include <algorithm>
 #include <map>
 #include <tuple>
+#include <unordered_set>
 
 using namespace LAMMPS_NS;
 using namespace FixConst;
@@ -189,8 +190,10 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
   xsurf = vsurf = omegasurf = nullptr;
   radsurf = nullptr;
 
-  contacting_surfs = nullptr;
-  nmaxcontacts = 0;
+  contact_surfs = nullptr;
+  contact_forces = nullptr;
+  nmax_contact_surfs = 0;
+  nmax_contact_forces = 0;
 
   nmax = 0;
   mass_rigid = nullptr;
@@ -265,8 +268,11 @@ FixSurfaceGlobal::~FixSurfaceGlobal()
   memory->sfree(connect2d);
   memory->sfree(connect3d);
 
-  memory->sfree(contacting_surfs);
-  memory->destroy(contacting_surfs);
+  memory->sfree(contact_surfs);
+  memory->destroy(contact_surfs);
+
+  memory->sfree(contact_forces);
+  memory->destroy(contact_forces);
 
   memory->destroy(xsurf);
   memory->destroy(vsurf);
@@ -637,7 +643,8 @@ void FixSurfaceGlobal::pre_neighbor()
 
 void FixSurfaceGlobal::post_force(int vflag)
 {
-  int i,j,k,ii,jj,inum,jnum,jflag,otherflag,ncontacts;
+  int i,j,k,ii,jj,inum,jnum,jflag,otherflag;
+  int n_contact_surfs, n_contact_forces;
   double xtmp,ytmp,ztmp,radi,delx,dely,delz;
   double meff;
   int *ilist,*jlist,*numneigh,**firstneigh;
@@ -648,6 +655,8 @@ void FixSurfaceGlobal::post_force(int vflag)
 
   model->history_update = 1;
   if (update->setupflag) model->history_update = 0;
+
+  std::unordered_set<int> processed_contacts;
 
   // if just reneighbored:
   // update rigid body masses for owned atoms if using FixRigid
@@ -718,7 +727,7 @@ void FixSurfaceGlobal::post_force(int vflag)
       allhistory = firsthistory[i];
     }
 
-    ncontacts = 0;
+    n_contact_surfs = 0;
     for (jj = 0; jj < jnum; jj++) {
       j = jlist[jj];
 
@@ -783,27 +792,37 @@ void FixSurfaceGlobal::post_force(int vflag)
       }
 
       // append surf to list of contacts
-      if (ncontacts + 1 > nmaxcontacts) {
-        nmaxcontacts += DELTACONTACTS;
-        memory->grow(contacting_surfs, nmaxcontacts * sizeof(ContactingSurf),
-                                      "surface/global:contacts");
+      if (n_contact_surfs + 1 > nmax_contact_surfs) {
+        nmax_contact_surfs += DELTACONTACTS;
+        memory->grow(contact_surfs, nmax_contact_surfs * sizeof(ContactSurf),
+                                      "surface/global:contact_surfs");
       }
 
 
       if (dimension == 2) {
-        contacting_surfs[ncontacts].index = j;
-        contacting_surfs[ncontacts].type = lines[j].type;
-        contacting_surfs[ncontacts].overlap = sqrt(rsq) - radsum;
-        contacting_surfs[ncontacts].r[0] = dr[0];
-        contacting_surfs[ncontacts].r[1] = dr[1];
-        contacting_surfs[ncontacts].r[2] = dr[2];
+        contact_surfs[n_contact_surfs].index = j;
+        contact_surfs[n_contact_surfs].type = lines[j].type;
+        contact_surfs[n_contact_surfs].overlap = sqrt(rsq) - radsum;
+        contact_surfs[n_contact_surfs].r[0] = dr[0];
+        contact_surfs[n_contact_surfs].r[1] = dr[1];
+        contact_surfs[n_contact_surfs].r[2] = dr[2];
       }
 
-      ncontacts += 1;
+      n_contact_surfs += 1;
     }
 
     // Reduce set of contacts
-    std::sort(contacting_surfs, contacting_surfs + ncontacts, [](ContactingSurf a, ContactingSurf b) {return a.overlap > b.overlap;});
+    std::sort(contact_surfs, contact_surfs + n_contact_surfs, [](ContactSurf a, ContactSurf b) {return a.overlap > b.overlap;});
+
+    n_contact_forces = 0;
+    processed_contacts.clear();
+
+    for (j = 0; j < n_contact_surfs; j++) {
+      if (processed_contacts.find(int) != processed_contacts.end()) continue;
+      processed_contacts.contact_surfs.insert(j);
+
+    }
+
 
     /*
     For contact in reduced contacts:

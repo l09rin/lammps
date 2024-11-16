@@ -190,14 +190,22 @@ class FixSurfaceGlobal : public Fix {
 
   // struct for storing contact data
 
-  struct ContactingSurf {
+  struct ContactSurf {
     int index, type;
     double r[3];
     double overlap;
   };
 
-  ContactingSurf *contacting_surfs;
-  int nmaxcontacts;
+  struct ContactForce {
+    int naveraged, type;
+    double r[3];
+    double overlap;
+  };
+
+  ContactSurf *contact_surfs;
+  ContactForce *contact_forces;
+  int nmax_contact_surfs;
+  int nmax_contact_forces;
 
   // data for DumpImage
 
