@@ -188,7 +188,7 @@ class FixSurfaceGlobal : public Fix {
     int *neigh_p2;        // ditto for connections to endpt 2
     int *pwhich_p1;       // which point (0,1) on other line is endpt 1
     int *pwhich_p2;       // ditto for endpt 2
-    int *nside_p1;        // consitency of other line normal
+    int *nside_p1;        // consistency of other line normal
     int *nside_p2;        // ditto for endpt 2
                           //   SAME_SIDE = 2 normals are on same side of surf
                           //   OPPOSITE_SIDE = opposite sides of surf
@@ -209,7 +209,7 @@ class FixSurfaceGlobal : public Fix {
     int *ewhich_e1;       // which edge (0,1,2) on other tri shares edge 1
     int *ewhich_e2;       // ditto for edge 2
     int *ewhich_e3;       // ditto for edge 3
-    int *nside_e1;        // consitency of other tri normal
+    int *nside_e1;        // consistency of other tri normal
     int *nside_e2;        // ditto for edge 2
     int *nside_e3;        // ditto for edge 3
                           //   SAME_SIDE = 2 normals are on same side of surf
@@ -234,14 +234,22 @@ class FixSurfaceGlobal : public Fix {
 
   // struct for storing contact data
 
-  struct ContactingSurf {
+  struct ContactSurf {
     int index, type;
     double r[3];
     double overlap;
   };
 
-  ContactingSurf *contacting_surfs;
-  int nmaxcontacts;
+  struct ContactForce {
+    int naveraged, type;
+    double r[3];
+    double overlap;
+  };
+
+  ContactSurf *contact_surfs;
+  ContactForce *contact_forces;
+  int nmax_contact_surfs;
+  int nmax_contact_forces;
 
   // data for DumpImage
 
