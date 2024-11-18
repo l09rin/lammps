@@ -286,7 +286,7 @@ FixSurfaceGlobal::~FixSurfaceGlobal()
   memory->destroy(aflag_e1);
   memory->destroy(aflag_e2);
   memory->destroy(aflag_e3);
-  
+
   memory->destroy(neigh_c1);
   memory->destroy(neigh_c2);
   memory->destroy(neigh_c3);
@@ -685,8 +685,6 @@ void FixSurfaceGlobal::post_force(int vflag)
   model->history_update = 1;
   if (update->setupflag) model->history_update = 0;
 
-  std::unordered_set<int> processed_contacts;
-
   // if just reneighbored:
   // update rigid body masses for owned atoms if using FixRigid
   //   body[i] = which body atom I is in, -1 if none
@@ -845,6 +843,7 @@ void FixSurfaceGlobal::post_force(int vflag)
 
     n_contact_forces = 0;
     processed_contacts.clear();
+    connected_contacts.clear();
 
     for (n = 0; n < n_contact_surfs; n++) {
       j = contact_surfs[n].index;
@@ -863,15 +862,27 @@ void FixSurfaceGlobal::post_force(int vflag)
       if (dimension == 2) {
         for (m = 0; m < connect2d[j].np1; m++) {
           k = connect2d[j].neigh_p1[m];
-          //append to connected_surfs
+          if (processed_contacts.find(k) != processed_contacts.end())
+            connected_contacts.insert(k);
         }
         for (m = 0; m < connect2d[j].np2; m++) {
           k = connect2d[j].neigh_p2[m];
+          if (processed_contacts.find(k) != processed_contacts.end())
+            connected_contacts.insert(k);
         }
 
-        // loop through connected surfs...
+        while (connected_contacts.size() != 0) {
+          auto itr = connected_contacts.begin();
+          k = *itr;
+          connected_contacts.erase(itr);
+          processed_contacts.insert(k);
+
+          // if flat, convex, concave...
+          //  need to identify which face is in contact,
+          //  do I need to save j & m when walking across flats?
+        }
       } else {
-        continue; // 2d to start
+        continue; // 3D
       }
     }
 
@@ -1825,9 +1836,9 @@ void FixSurfaceGlobal::connectivity2d_global()
       }
     }
   }
-  
+
   // deallocate counts and plines
-  
+
   memory->destroy(counts);
   memory->destroy(plines);
 
@@ -1977,7 +1988,7 @@ void FixSurfaceGlobal::connectivity3d_global()
     counts[tri2edge[i][1]]++;
     counts[tri2edge[i][2]]++;
   }
-  
+
   memory->create_ragged(etris,nedges,counts,"surface/global:etris");
 
   for (int i = 0; i < nedges; i++) counts[i] = 0;
@@ -2008,7 +2019,7 @@ void FixSurfaceGlobal::connectivity3d_global()
   memory->create_ragged(aflag_e3,nedges,counts,"surface/global:aflag_e3");
 
   // set connect3d edge vector ptrs to rows of corresponding ragged arrays
-  
+
   for (int i = 0; i < ntris; i++) {
     connect3d[i].ne1 = counts[tri2edge[i][0]];
     if (connect3d[i].ne1 == 0) {
@@ -2081,9 +2092,9 @@ void FixSurfaceGlobal::connectivity3d_global()
       }
     }
   }
-  
+
   // deallocate counts, tri2edge, etris
-  
+
   memory->destroy(counts);
   memory->destroy(tri2edge);
   memory->destroy(etris);
@@ -2114,7 +2125,7 @@ void FixSurfaceGlobal::connectivity3d_global()
       jnorm = tris[j].norm;
       dotnorm = MathExtra::dot3(inorm,jnorm);
       MathExtra::sub3(points[tris[i].p2].x,points[tris[i].p1].x,iedge);
-      
+
       if ((jpfirst == 1 && jpsecond == 2) ||
 	  (jpfirst == 2 && jpsecond == 3) ||
 	  (jpfirst == 3 && jpsecond == 1)) {
@@ -2188,7 +2199,7 @@ void FixSurfaceGlobal::connectivity3d_global()
         }
       }
     }
-    
+
     for (m = 0; m < connect3d[i].ne3; m++) {
       j = connect3d[i].neigh_e3[m];
 
@@ -2234,7 +2245,7 @@ void FixSurfaceGlobal::connectivity3d_global()
       }
     }
   }
-      
+
   // setup tri corner point connectivity lists
   // count # of tris containing each corner point (including self)
   // ctris =  ragged 2d array with indices of tris which contain each point
@@ -2332,7 +2343,7 @@ void FixSurfaceGlobal::connectivity3d_global()
   }
 
   // deallocate counts and ctris
-  
+
   memory->destroy(counts);
   memory->destroy(ctris);
 

@@ -20,9 +20,10 @@ FixStyle(surface/global,FixSurfaceGlobal)
 #ifndef LMP_FIX_SURFACE_GLOBAL_H
 #define LMP_FIX_SURFACE_GLOBAL_H
 
+#include "fix.h"
+
 #include <stdio.h>
-#include "fix.h"
-#include "fix.h"
+#include <unordered_set>
 
 namespace LAMMPS_NS {
 
@@ -250,6 +251,9 @@ class FixSurfaceGlobal : public Fix {
   ContactForce *contact_forces;
   int nmax_contact_surfs;
   int nmax_contact_forces;
+
+  std::unordered_set<int> processed_contacts;
+  std::unordered_set<int> connected_contacts;
 
   // data for DumpImage
 
