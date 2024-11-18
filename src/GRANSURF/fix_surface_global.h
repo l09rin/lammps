@@ -60,7 +60,7 @@ class FixSurfaceGlobal : public Fix {
   int dimension,firsttime,use_history;
   double dt,skin;
 
-  // for granular model choices
+  // granular models
 
   class Granular_NS::GranularModel *model;
   int history, size_history, heat_flag;
@@ -75,17 +75,9 @@ class FixSurfaceGlobal : public Fix {
 
   double triggersq;
 
-  // group settings
-
-  int ngroup;             // # of defined groups
-  char **gnames;          // name of each group
-  int *bitmask;           // one-bit mask for each group
-  int *gmask;             // mask bits for each surf
-
   // motion settings
 
   struct Motion {
-    int igroup;
     int mstyle;
     int vxflag,vyflag,vzflag;
     int axflag,ayflag,azflag;
@@ -267,10 +259,7 @@ class FixSurfaceGlobal : public Fix {
   void move_init();
   void move_clear();
 
-  int modify_params_group(int, int, int, char **);
   int modify_params_move(Motion *, int, char **);
-  int find_group(const char *);
-  int add_group(const char *);
 };
 
 }    // namespace LAMMPS_NS

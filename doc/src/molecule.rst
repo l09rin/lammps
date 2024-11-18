@@ -105,6 +105,11 @@ use that attribute (e.g. no bonds).
    labels will determine the actual types directly depending on the
    current :doc:`labelmap <labelmap>` settings.
 
+   .. note::
+
+   For molecule files defining line segments or triangles, only the
+   *toff* keyword is relevant; the other offset keywords are ignored.
+
 The *scale* keyword scales the size of the molecule.  This can be
 useful for modeling polydisperse granular rigid bodies.  The scale
 factor is applied to each of these properties in the molecule file, if
@@ -114,6 +119,11 @@ individual diameters of each particle (Diameters section), the total
 mass of the molecule (header keyword = mass), the center-of-mass of
 the molecule (header keyword = com), and the moments of inertia of the
 molecule (header keyword = inertia).
+
+   .. note::
+
+   For molecule files defining line segments or triangles, only the
+   the *scale* keyword is ignored.
 
 .. note::
 
@@ -262,8 +272,8 @@ below).
         - # of triangle Ntris in molecule
         - 0
 
-A molecule file can only contain either the *atoms*, *lines*, or
-*triangles* keyword.  All of the other keywords can only relevant for
+A molecule file can contain only either the *atoms*, *lines*, or
+*triangles* keyword.  All the other keywords can only be used for
 a molecule file containing the *atoms* keyword.
 
 For *mass*, *com*, and *inertia*, the default is for LAMMPS to calculate

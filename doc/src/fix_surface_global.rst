@@ -140,68 +140,56 @@ Restart, fix_modify, output, run start/stop, minimize info
 No information about this fix is written to :doc:`binary restart files
 <restart>`.
 
-This fix supports two :doc:`fix_modify <fix_modify>` keywords,
-specific to this fix.  The *group* keword can be used to assign
-triangles or lines to groups with an ID, simillar to how how particles
-are assinged to groups via the :doc:`group <group>` command.  The
-*move* keyword can be used to make a group of triangles or lines move
-in prescribed manners, similar to the :doc:`fix move <fix_move>`
-command.  Note that for *local* surfaces the same operations can be
-performed directly with the :doc:`group <group>` and :doc:`fix move
-<fix_move>` since individual triangles and lines are finite-sized
-particles distributed across processors.
+This fix can use the *move* keyword of the doc:`fix_modify
+<fix_modify>` command to make subsets of triangles or lines move in
+prescribed manners, similar to the :doc:`fix move <fix_move>` command.
+The *move* keyword takes one or more *type* values as an argument to
+specify which surfaces to ove, It can be used multiple times to enable
+different subsets of triangles or lines to move differently.
 
-In the description that follows, *surfs* can mean triangles (3d) or
-line segments (2d).
+Note that for *local* surfaces the same operations can be performed
+directly with the :doc:`group <group>` and :doc:`fix move <fix_move>`
+since individual triangles and lines are finite-sized particles
+distributed across processors.
+
+In the description that follows, *surfs* mean triangles (3d) or line
+segments (2d).
+
+NOTE: make this addition on center point to the group doc page:
+For the group region style, the center point of the surf (triangle or
+line) is used to determine whether the surf is in the region or not.
 
 .. code-block:: LAMMPS
 
-   fix_modify fix-ID keyword value keyword value ...
+   fix_modify fix-ID move values ...
 
 * fix-ID = ID of the fix to modify
-* one or more keyword/value pairs may be appended
-* keyword = *group* or *move*
+* move = keyword specific to this fix
 
   .. parsed-literal::
 
-       *group* values = group-ID style args
-         group-ID = ID of the new group or existing group of surfs
-           new group = a new group is created with the listed surfs
-           existing group = additional surfs are added to the group
-         style = region or type or id or molecule
-         region arg = region-ID
-         type or id or molecule args = one of the following 3 formats
-           args = list of one or more surf types (1-Ntypes) or surf IDs or molecule IDs (depending on *style*\ )
-             any entry in list can be a sequence formatted as A:B or A:B:C where
-             A = starting index, B = ending index,
-             C = increment between indices, 1 if not specified
-           args = logical value
-             logical = "<" or "<=" or ">" or ">=" or "==" or "!="
-             value = surf type (1-Ntypes) or surf ID or molecule ID (depending on *style*\ )
-           args = logical value1 value2
-             logical = "<>"
-             value1,value2 = surf types or surf IDs or molecule IDs (depending on *style*\ )
-       *move* values = group-ID style args
-          group-ID = ID of the group of surfs to prescribe motion for
+       *move* values = type style args
+          type =  numeric type (see asterisk form below)
           style = *none* or *linear* or *wiggle* or *rotate* or *transrot* or *variable*
-          *none* args = none
-          *linear* args = Vx Vy Vz
-          *wiggle* args = Ax Ay Az period
-          *rotate* args = Px Py Pz Rx Ry Rz period
-          *transrot* args = Vx Vy Vz Px Py Pz Rx Ry Rz period
-          *variable* args = v_dx v_dy v_dz v_vx v_vy v_vz
+           *none* args = none
+           *linear* args = Vx Vy Vz
+           *wiggle* args = Ax Ay Az period
+           *rotate* args = Px Py Pz Rx Ry Rz period
+           *transrot* args = Vx Vy Vz Px Py Pz Rx Ry Rz period
+           *variable* args = v_dx v_dy v_dz v_vx v_vy v_vz
+	   
+The type determines which surfaces move.
+Recall that each surface has a numeric type (how is it read or assigned?)
 
-See the :doc:`group <group>` doc page for a detailed explanation of
-the various group styles and their arguments.  Note that not all group
-styles decribed on the :doc:`group <group>` doc page are supported by
-this fix, only region, type, id, and molecule.
-
-NOTE: explain that none applies to all groups
-
-Fpr the group region style, the center point of the surf (triangle or
-line) is used to determine whether the surf is in the region or not.
-
-NOTE: make this addition on center point to the group doc page as well?
+The type can be specified in one of several ways.  A single numeric
+value can be used.  Or a wildcard asterisk can be used in place of or
+in conjunction with the numeric arguments to select multiple type
+values.  This takes the form "\*" or "\*n" or "n\*" or "m\*n".  If
+:math:`N` is the number of atom types, then an asterisk with no
+numeric values means all types from 1 to :math:`N`.  A leading
+asterisk means all types from 1 to n (inclusive).  A trailing asterisk
+means all types from n to :math:`N` (inclusive).  A middle asterisk
+means all types from m to n (inclusive).
 
 See the :doc:`fix move <fix_move>` doc page for a detailed explanation
 of the various move styles and their arguments.

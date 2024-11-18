@@ -13,12 +13,30 @@
 ------------------------------------------------------------------------- */
 
 // for both lines and tris:
+// NOTE: allow for multiple instances of this fix or not ?
 // NOTE: set flatthresh based on angle (degrees) set by user
 // NOTE: need to order connections with FLAT first?
 // NOTE: error checks for zero-length lines, duplicate lines
 // NOTE: warn for too-small lines
+// NOTE: more efficient neighbor lists
+//       see Joel's 18 Nov email for idea
 // NOTE: alter connection info if 2 lines are different types ?
-// MOTE: how to set molecue ID and type for STL and molecule input
+// NOTE: allow setting a granular model for each type
+// MOTE: how to set molecule IDs and types for STL and molecule input
+//       STL files have no per-tri flags
+//       molecule files can have types - how to apply offset?
+//       could allow reading of multiple STL or molecule files in one fix
+//         with an arg for mol ID or type
+//         or could use different instances of FSG to do this
+// NOTE: assign motion via fix modify move keyword with a type (range)
+//       this means each type can have a Motion class assigned to it
+//       integrate() should access the matching Motion class for each surf
+// NOTE: should this fix produce any output
+//         global array with force on each surf
+//         or global array of forces per molecule ID (consecutive) ?
+//         ditto for particle contact counts ?
+// NOTE: should all fix move options be supported by this fix?
+// NOTE: allow use of the scale keyword in the molecule command for lines/tris ?
 
 #include "fix_surface_global.h"
 
@@ -58,8 +76,6 @@ using namespace Granular_NS;
 using namespace MathConst;
 using namespace MathExtra;
 using namespace SurfExtra;
-
-static constexpr int MAX_GROUP = 32;
 
 enum{TYPE,MOLECULE,ID};
 enum{LT,LE,GT,GE,EQ,NEQ,BETWEEN};
@@ -242,11 +258,6 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
 
   nsurf = nlines;
   if (dimension == 3) nsurf = ntris;
-
-  gnames = new char*[MAX_GROUP];
-  bitmask = new int[MAX_GROUP];
-  for (int i = 0; i < MAX_GROUP; i++) gnames[i] = nullptr;
-  for (int i = 0; i < MAX_GROUP; i++) bitmask[i] = 1 << i;
 
   surface_attributes();
 }
@@ -965,20 +976,6 @@ void FixSurfaceGlobal::post_force(int vflag)
 
 int FixSurfaceGlobal::modify_param(int narg, char **arg)
 {
-  // group options
-
-  if (strcmp(arg[0],"group") == 0) {
-    if (narg < 4) error->all(FLERR,"Illegal fix_modify command");
-
-    int igroup = find_group(arg[1]);
-    if (igroup < 0) igroup = add_group(arg[1]);
-    int bit = bitmask[igroup];
-
-    int argcount = modify_params_group(igroup,bit,narg-2,&arg[2]);
-
-    return argcount + 2;
-  }
-
   // move options
 
   if (strcmp(arg[0],"move") == 0) {
@@ -1008,11 +1005,7 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
         memory->srealloc(motions,maxmotion*sizeof(Motion),"fix_surface_global::motion");
     }
 
-    int igroup = find_group(arg[1]);
-    if (igroup < 0) error->all(FLERR,"Fix surface/global move group does not exist");
-    motions[nmotion].igroup = igroup;
-
-    int argcount = modify_params_move(&motions[nmotion],narg-2,&arg[2]);
+    int argcount = modify_params_move(&motions[nmotion],narg-1,&arg[1]);
     nmotion++;
 
     force_reneighbor = 1;
@@ -1022,182 +1015,6 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
   }
 
   // keyword not recognized
-
-  return 0;
-}
-
-/* ---------------------------------------------------------------------- */
-
-int FixSurfaceGlobal::modify_params_group(int igroup, int bit, int narg, char **arg)
-{
-  /*
-  if (strcmp(arg[0],"region") == 0) {
-    if (narg < 2) error->all(FLERR,"Illegal fix_modify command");
-
-    auto region = domain->get_region_by_id(arg[3]);
-    if (!region) error->all(FLERR,"Region {} for fix_modify group region does not exist", arg[3]);
-    region->init();
-    region->prematch();
-
-    // check center point for each line or tri
-
-    double xc,yc,zc;
-    double *x1,*x2,*x3;
-
-    if (dimension == 2) {
-      for (int i = 0; i < nsurf; i++) {
-        x1 = points[lines[i].p1].x;
-        x2 = points[lines[i].p2].x;
-        xc = 0.5 * (x1[0] + x2[0]);
-        yc = 0.5 * (x1[1] + x2[1]);
-        if (region->match(xc,yc,0.0))
-          gmask[i] |= bit;
-      }
-    } else {
-      double onethird = 1.0/3.0;
-      for (int i = 0; i < nsurf; i++) {
-        x1 = points[tris[i].p1].x;
-        x2 = points[tris[i].p2].x;
-        x3 = points[tris[i].p3].x;
-        xc = onethird * (x1[0] + x2[0] + x3[0]);
-        yc = onethird * (x1[1] + x2[1] + x3[1]);
-        zc = onethird * (x1[2] + x2[2] + x3[2]);
-        if (region->match(xc,yc,zc))
-          gmask[i] |= bit;
-      }
-    }
-
-    return 2;
-
-    if (strcmp(arg[0],"type") == 0 ||
-        strcmp(arg[0],"id") == 0 ||
-        strcmp(arg[0],"molecule") == 0) {
-
-      int category;
-      if (strcmp(arg[1],"type") == 0) category = TYPE;
-      else if (strcmp(arg[1],"molecule") == 0) category = MOLECULE;
-      else if (strcmp(arg[1],"id") == 0) category = ID;
-
-      // args = logical condition
-
-      if (narg > 3 &&
-          (strcmp(arg[2],"<") == 0 || strcmp(arg[2],">") == 0 ||
-           strcmp(arg[2],"<=") == 0 || strcmp(arg[2],">=") == 0 ||
-           strcmp(arg[2],"==") == 0 || strcmp(arg[2],"!=") == 0 ||
-           strcmp(arg[2],"<>") == 0)) {
-
-        int condition = -1;
-        if (strcmp(arg[2],"<") == 0) condition = LT;
-        else if (strcmp(arg[2],"<=") == 0) condition = LE;
-        else if (strcmp(arg[2],">") == 0) condition = GT;
-        else if (strcmp(arg[2],">=") == 0) condition = GE;
-        else if (strcmp(arg[2],"==") == 0) condition = EQ;
-        else if (strcmp(arg[2],"!=") == 0) condition = NEQ;
-        else if (strcmp(arg[2],"<>") == 0) condition = BETWEEN;
-        else error->all(FLERR,"Illegal fix surface/global group command");
-
-        int bound1,bound2;
-        bound1 = utils::inumeric(FLERR, arg[3], false, lmp);
-        bound2 = -1;
-
-        if (condition == BETWEEN) {
-          if (narg < 4) error->all(FLERR,"Illegal group command");
-          bound2 = utils::inumeric(FLERR, arg[3], false, lmp);
-        }
-
-        // add to group if meets condition
-
-        int attribute;
-
-        for (int i = 0; i < nsurf; i++) {
-          attribute = i+1;
-          if (dimension == 2) {
-            if (category == TYPE) attribute = lines[i].type;
-            else if (category == MOLECULE) attribute = lines[i].mol;
-          } else {
-            if (category == TYPE) attribute = tris[i].type;
-            else if (category == MOLECULE) attribute = tris[i].mol;
-          }
-
-          if (condition == LT) {
-            if (attribute < bound1) gmask[i] |= bit;
-          } else if (condition == LE) {
-            if (attribute <= bound1) gmask[i] |= bit;
-          } else if (condition == GT) {
-            if (attribute > bound1) gmask[i] |= bit;
-          } else if (condition == GE) {
-            if (attribute >= bound1) gmask[i] |= bit;
-          } else if (condition == EQ) {
-            if (attribute == bound1) gmask[i] |= bit;
-          } else if (condition == NEQ) {
-            if (attribute != bound1) gmask[i] |= bit;
-          } else if (condition == BETWEEN) {
-            if (attribute >= bound1 && attribute <= bound2)
-              gmask[i] |= bit;
-          }
-        }
-
-        return 4;
-      }
-
-      // args = list of values
-      // NOTE: how to stop at end of args - check if non-numeric
-      // NOTE: how to parse colon syntax
-
-      char *typestr = nullptr;
-      tagint start,stop,delta;
-
-      iarg = 2;
-      while (isnumeric{arg[iarg[2][0]) {
-        delta = 1;
-        stop = start = utils::inumeric(FLERR, typestr, false, lmp);
-        if (typestr == nullptr) {
-          try {
-            ValueTokenizer values(arg[iarg],":");
-            start = values.next_tagint();
-            if (utils::strmatch(arg[iarg],"^-?\\d+$")) {
-              stop = start;
-            } else if (utils::strmatch(arg[iarg],"^-?\\d+:-?\\d+$")) {
-              stop = values.next_tagint();
-            } else if (utils::strmatch(arg[iarg],"^-?\\d+:-?\\d+:\\d+$")) {
-              stop = values.next_tagint();
-              delta = values.next_tagint();
-            } else throw TokenizerException("Syntax error","");
-          } catch (TokenizerException &e) {
-            error->all(FLERR,"Incorrect range string '{}': {}",arg[iarg],e.what());
-          }
-          if (delta < 1)
-            error->all(FLERR,"Illegal range increment value");
-        }
-
-        // add to group if attribute matches value or sequence
-
-        int attribute;
-
-        for (int i = 0; i < nsurf; i++) {
-          attribute = i+1;
-          if (dimension == 2) {
-            if (category == TYPE) attribute = lines[i].type;
-            else if (category == MOLECULE) attribute = lines[i].mol;
-          } else {
-            if (category == TYPE) attribute = tris[i].type;
-            else if (category == MOLECULE) attribute = tris[i].mol;
-          }
-
-          if (attribute >= start && attribute <= stop &&
-              (attribute-start) % delta == 0) gmask[i] |= bit;
-        }
-
-        delete [] typestr;
-      }
-
-        return 4;
-    }
-
-    // return error
-  }
-
-  */
 
   return 0;
 }
@@ -1341,29 +1158,6 @@ int FixSurfaceGlobal::modify_params_move(Motion *motion, int narg, char **arg)
 
   //return iarg;
   return 0;
-}
-
-/* ---------------------------------------------------------------------- */
-
-int FixSurfaceGlobal::find_group(const char *name)
-{
-  for (int igroup = 0; igroup < ngroup; igroup++)
-    if (strcmp(gnames[igroup],name) == 0) return igroup;
-  return -1;
-}
-
-/* ---------------------------------------------------------------------- */
-
-int FixSurfaceGlobal::add_group(const char *name)
-{
-  if (ngroup == MAX_GROUP) error->all(FLERR,"Fix surface/global too many groups");
-
-  int n = strlen(name) + 1;
-  gnames[ngroup] = new char[n];
-  strcpy(gnames[ngroup],name);
-  ngroup++;
-
-  return ngroup-1;
 }
 
 /* ---------------------------------------------------------------------- */
