@@ -20,10 +20,10 @@ FixStyle(surface/global,FixSurfaceGlobal)
 #ifndef LMP_FIX_SURFACE_GLOBAL_H
 #define LMP_FIX_SURFACE_GLOBAL_H
 
-#include "fix.h"
-
 #include <stdio.h>
-#include <unordered_set>
+#include "fix.h"
+#include <map>
+#include <tuple>
 
 namespace LAMMPS_NS {
 
@@ -61,24 +61,36 @@ class FixSurfaceGlobal : public Fix {
   int dimension,firsttime,use_history;
   double dt,skin;
 
+  // map for identifying unique points
+
+  std::map<std::tuple<double,double,double>,int> *hash;
+
+  // per-surf properties
+
+  int maxsurftype;
+  double **xsurf,**vsurf,**omegasurf,*radsurf;
+
   // granular models
 
-  class Granular_NS::GranularModel *model;
+  int nmodel,maxmodel;
+  class Granular_NS::GranularModel **models;   // list of command-line models
+  class Granular_NS::GranularModel *model;     // ptr to single model
+  class Granular_NS::GranularModel ***types2model;  // model assigned to each particle/surf type pair
+  
   int history, size_history, heat_flag;
 
   double Twall;
   int tvar;
   char *tstr;
 
-  // per-surf properties
-
-  double **xsurf,**vsurf,**omegasurf,*radsurf;
-
+  // neighbor params
+  
   double triggersq;
-
-  // motion settings
+  
+  // settings for motion applied to specific surf types
 
   struct Motion {
+    int active;
     int mstyle;
     int vxflag,vyflag,vzflag;
     int axflag,ayflag,azflag;
@@ -91,9 +103,11 @@ class FixSurfaceGlobal : public Fix {
   };
 
   struct Motion *motions;
-  int nmotion;
-  int maxmotion;
+  int nmotion,maxmotion;
+  int anymove;
 
+  int *type2motion;
+  
   double **points_original,**xsurf_original;
   double **points_lastneigh;
 
@@ -108,7 +122,7 @@ class FixSurfaceGlobal : public Fix {
   double *mass_rigid;      // rigid mass for owned+ghost atoms
   int nmax;                // allocated size of mass_rigid
 
-  // data structs for extracting surfs from molecule files
+  // data structs for extracting surfs from molecule or STL files
 
   struct Point {
     double x[3];
@@ -130,9 +144,13 @@ class FixSurfaceGlobal : public Fix {
   Line *lines;                // global list of lines
   Tri *tris;                  // global list of tris
   int npoints,nlines,ntris;   // count of each
+  int maxpoints;
   int nsurf;                  // count of lines or tris for 2d/3d
 
-                              // ragged 2d arrays for 2d connectivity
+  int *pointmove;
+  
+  // ragged 2d arrays for 2d connectivity
+  
   int **plines;               // indices of lines which contain each end point
   int **neigh_p1;             // indices of other lines connected to endpt 1
   int **pwhich_p1;            // which point (0/1) on other line is endpt 1
@@ -145,7 +163,8 @@ class FixSurfaceGlobal : public Fix {
   int **nside_p2;             // ditto for endpt 2
   int **aflag_p2;             // ditto for endpt 2
 
-                              // ragged 2d arrays for 3d edge connectivity
+  // ragged 2d arrays for 3d edge connectivity
+  
   int **etris;                // indices of tris which contain each edge
   int **neigh_e1;             // indices of other tris connected to edge 1
   int **ewhich_e1;            // which edge (0/1/2) on other tri is edge 1
@@ -162,7 +181,8 @@ class FixSurfaceGlobal : public Fix {
   int **nside_e3;             // ditto for edge 3
   int **aflag_e3;             // ditto for edge 3
 
-                              // ragged 2d arrays for 3d corner connectivity
+  // ragged 2d arrays for 3d corner connectivity
+  
   int **ctris;                // indices of tris which contain each corner point
   int **neigh_c1;             // indices of other tris connected to cpt 1
   int **cwhich_c1;            // which corner point (0/1/2) on other tri is cpt 1
@@ -171,7 +191,7 @@ class FixSurfaceGlobal : public Fix {
   int **neigh_c3;             // indices of tris connected to cpt 3
   int **cwhich_c3;            // which coner point (0/1/2) on other tri is cpt 3
 
-  // 2d/3d connectivity
+  // per-surface 2d/3d connectivity
 
   struct Connect2d {      // line connectivity
     int np1,np2;          // # of lines connected to endpts 1/2 (NOT including self)
@@ -244,9 +264,6 @@ class FixSurfaceGlobal : public Fix {
   int nmax_contact_surfs;
   int nmax_contact_forces;
 
-  std::unordered_set<int> processed_contacts;
-  std::unordered_set<int> connected_contacts;
-
   // data for DumpImage
 
   int *imflag;
@@ -255,15 +272,18 @@ class FixSurfaceGlobal : public Fix {
 
   // private methods
 
-  void extract_from_molecules(char *);
+  void extract_from_molecule(char *);
   void extract_from_stlfile(char *);
   void connectivity2d_global();
   void connectivity3d_global();
   void surface_attributes();
-  void move_init();
-  void move_clear();
+    
+  int modify_param_move(Motion *, int, char **);
 
-  int modify_params_move(Motion *, int, char **);
+  void move_linear(int, int);
+  void move_wiggle(int, int);
+  void move_rotate(int, int);
+  void move_rotate_point(int, double *, double *, double, double);
 };
 
 }    // namespace LAMMPS_NS
