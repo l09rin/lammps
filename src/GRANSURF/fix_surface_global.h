@@ -60,6 +60,10 @@ class FixSurfaceGlobal : public Fix {
  private:
   int dimension,firsttime,use_history;
   double dt,skin;
+  double flatthresh;
+  double Twall;
+  int tvar;
+  char *tstr;
 
   // map for identifying unique points
 
@@ -72,16 +76,18 @@ class FixSurfaceGlobal : public Fix {
 
   // granular models
 
-  int nmodel,maxmodel;
+  struct ModelTypes {
+    int plo,phi;
+    int slo,shi;
+  };
+
+  ModelTypes *modeltypes;
   class Granular_NS::GranularModel **models;   // list of command-line models
   class Granular_NS::GranularModel *model;     // ptr to single model
   class Granular_NS::GranularModel ***types2model;  // model assigned to each particle/surf type pair
-  
-  int history, size_history, heat_flag;
 
-  double Twall;
-  int tvar;
-  char *tstr;
+  int nmodel,maxmodel;
+  int history, size_history, heat_flag;
 
   // neighbor params
   
