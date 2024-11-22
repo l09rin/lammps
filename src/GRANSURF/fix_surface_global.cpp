@@ -301,7 +301,8 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
   points_lastneigh = nullptr;
   points_original = nullptr;
   xsurf_original = nullptr;
-
+  pointmove = nullptr;
+  
   neigh_p1 = neigh_p2 = nullptr;
   pwhich_p1 = pwhich_p2 = nullptr;
   nside_p1 = nside_p2 = nullptr;
@@ -345,6 +346,8 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
   imflag = nullptr;
   imdata = nullptr;
 
+  type2motion = new int[maxsurftype+1];
+  
   firsttime = 1;
 
   // initialize surface attributes
@@ -368,12 +371,18 @@ FixSurfaceGlobal::~FixSurfaceGlobal()
   memory->sfree(lines);
   memory->sfree(tris);
 
-  memory->sfree(motions);
-
   memory->destroy(points_lastneigh);
   memory->destroy(points_original);
   memory->destroy(xsurf_original);
+  memory->destroy(pointmove);
 
+  memory->sfree(modeltypes);
+  for (int i = 0; i < nmodel; i++) delete models[i];
+  memory->sfree(models);
+
+  for (int i = 1; i <= atom->ntypes; i++) delete [] types2model[i];
+  delete [] types2model;
+  
   memory->destroy(neigh_p1);
   memory->destroy(neigh_p2);
   memory->destroy(pwhich_p1);
@@ -419,10 +428,13 @@ FixSurfaceGlobal::~FixSurfaceGlobal()
 
   memory->destroy(mass_rigid);
 
+  memory->sfree(motions);
+  delete [] type2motion;
+  
   delete list;
   delete listhistory;
   delete [] zeroes;
-  delete[] tstr;
+  delete [] tstr;
 
   if (use_history)
     modify->delete_fix("NEIGH_HISTORY_SURFACE_GLOBAL_" + std::to_string(instance_me));
@@ -1062,16 +1074,19 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
 	memory->destroy(points_lastneigh);
 	memory->destroy(points_original);
 	memory->destroy(xsurf_original);
+	memory->destroy(pointmove);
 	points_lastneigh = nullptr;
 	points_original = nullptr;
 	xsurf_original = nullptr;
-
+	pointmove = nullptr;
+	
 	int ifix = modify->find_fix(id);
 	modify->fmask[ifix] &= ~INITIAL_INTEGRATE;
 	force_reneighbor = 0;
 	next_reneighbor = -1;
       }
       
+      delete [] stypes;
       return 3;
     }
 
@@ -1104,6 +1119,7 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
       memory->create(points_lastneigh,npoints,3,"surface/global:points_lastneigh");
       memory->create(points_original,npoints,3,"surface/global:points_original");
       memory->create(xsurf_original,nsurf,3,"surface/global:xsurf_original");
+      memory->create(pointmove,npoints,"surface/global:pointmove");
     }
 
     anymove = 1;
@@ -1167,6 +1183,7 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
       }
     }
 
+    delete [] stypes;
     return 2 + styleargs;
   }
 
@@ -1192,7 +1209,7 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
 	  tris[i].type = stype;
     }
 
-    // NOTE: could count # of surf types reset and print stats
+    // NOTE: could count # of surfs with reset types and print stats
     
     return 3;
   }

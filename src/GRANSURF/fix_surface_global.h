@@ -116,7 +116,8 @@ class FixSurfaceGlobal : public Fix {
   
   double **points_original,**xsurf_original;
   double **points_lastneigh;
-
+  int *pointmove;
+  
   // storage of granular history info
 
   class FixNeighHistory *fix_history;
@@ -153,8 +154,6 @@ class FixSurfaceGlobal : public Fix {
   int maxpoints;
   int nsurf;                  // count of lines or tris for 2d/3d
 
-  int *pointmove;
-  
   // ragged 2d arrays for 2d connectivity
   
   int **plines;               // indices of lines which contain each end point
