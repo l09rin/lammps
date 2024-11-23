@@ -25,9 +25,15 @@
 // NOTE: enable fix move transrotate and variable styles ?
 // NOTE: allow use of the scale keyword in the molecule command for lines/tris ?
 // NOTE: what about reduced vs box units in fix_modify move params like fix_move ?
-// NOTE: what about PBC for moving surfs, or surfs which overlap PBC
-//         how is this handled for local surfs
+// NOTE: what about PBC
+//       connecntion finding, for moving surfs, surfs which overlap PBC
+//       how is this handled for local surfs
 // NOTE: init motion instance values to zero when allocate it for first time ?
+// NOTE: could allow non-assignment of type pairs
+//       to enable some particles pass thru some surfs
+// NOTE: print stats on # of surfs, connections, min/max surf sizes
+// NOTE: print stats on fix modify move and type/region effects
+// NOTE: memory usage stats are incomplete: neigh list, per-surf data
 
 #include "fix_surface_global.h"
 
@@ -267,7 +273,6 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
   // reset modeltypes shi from MAXSURFTYPE to maxsurtype
   // initialize types2model for all particle/surf type pairs
   // check that a model has been assigned to every type pair
-  // NOTE: could allow non-assignment to enable some particles pass thru some surfs
   
   for (int i = 0; i < nmodel; i++)
     if (modeltypes[i].shi == MAXSURFTYPE) modeltypes[i].shi = maxsurftype;
@@ -356,8 +361,6 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
 
   // compute connectivity of triangles/lines
   // create Connect3d or Connect2d data structs 
-  // NOTE: when done, print stats on connections
-  // NOTE: could also print stats on min/max line/tri size
   
   if (dimension == 2) connectivity2d_global();
   else connectivity3d_global();
@@ -675,7 +678,6 @@ void FixSurfaceGlobal::pre_neighbor()
     radi = radius[i];
 
     // for now, loop over all surfs
-    // NOTE: use a more sophisticated neighbor check
 
     for (j = 0; j < nsurf; j++) {
       delx = xtmp - xsurf[j][0];
@@ -1209,8 +1211,6 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
 	  tris[i].type = stype;
     }
 
-    // NOTE: could count # of surfs with reset types and print stats
-    
     return 3;
   }
   
@@ -1376,8 +1376,6 @@ void FixSurfaceGlobal::reset_dt()
 
 double FixSurfaceGlobal::memory_usage()
 {
-  // NOTE: need to include neigh lists
-
   double bytes = 0.0;
   bytes += npoints*sizeof(Point);
   if (dimension == 2) {
