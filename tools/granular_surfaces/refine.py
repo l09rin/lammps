@@ -1,0 +1,534 @@
+#!/usr/bin/env python
+
+# Script:  refine.py
+# Purpose: refine a set of granular surface elements for input to LAMMPS
+#          elements in 2d = line segments, elements in 3d = triangles
+# Syntax:  refine.py dim insource infile thresh outsource outfile
+#          dim = 2 or 3
+#          insource = mol for molecule file, stl for STL file
+#          infile = molecule or STL filename
+#          thresh = max size of resulting surface eleents
+#          outsource = mol for molecule file, stl for STL file
+#          outfile = molecule or STL filename
+# Author:  Steve Plimpton (Sandia), sjplimp at gmail.com
+
+# NOTES
+# print stats at each stage
+# could also work with local surfs via data and/or dump file
+
+import sys
+from operator import itemgetter
+from bisect import bisect
+from math import sqrt
+
+# ----------
+# classes
+# ----------
+
+class Point:
+  def __init__(self,x,y,z):
+    self.x = (x,y,z)
+
+class Line:
+  def __init__(self,point1,point2):
+    self.active = 1
+    self.point1 = point1
+    self.point2 = point2
+    self.p1 = self.p2 = -1
+
+class Edge:                  # unique tri edges
+  def __init__(self,p1,p2):
+    self.p1 = p1
+    self.p2 = p2
+    self.neigh = []
+    self.which = []
+  
+class Tri:
+  def __init__(self,point1,point2,point3):
+    self.active = 1
+    self.point1 = point1
+    self.point2 = point2
+    self.point3 = point3
+    self.p1 = self.p2 = self.p3 = -1
+    
+# ----------
+# functions
+# ----------
+
+def error(txt=None):
+  if not txt: print("Syntax: refine.py dim insource infile thresh outsource outfile")
+  else: print("ERROR:",txt)
+  sys.exit()
+
+def distance(x1,x2):
+  dx = x1[0] - x2[0]
+  dy = x1[1] - x2[1]
+  dz = x1[2] - x2[2]
+  r = sqrt(dx*dx + dy*dy + dz*dz)
+  return r
+
+def midpt(x1,x2):
+  xnew = 0.5 * (x1[0] + x2[0])
+  ynew = 0.5 * (x1[1] + x2[1])
+  znew = 0.5 * (x1[2] + x2[2])
+  return (xnew,ynew,znew)
+
+# mybisect in place of Python 3.10 bisect module
+# forward: one > all values before its insertion point
+# reverse: one > all values after its insertion point
+
+def mybisect(vec,one,func,reverse):
+  value = func(one)
+  ilo = 0
+  ihi = len(vec)
+  niter = 0
+  while 1:
+    if niter > 10: break
+    niter += 1
+    imid = (ilo+ihi) // 2
+    if ilo == ihi: break
+    if not reverse:
+      if value <= func(vec[imid]): ihi = imid
+      else: ilo = imid+1
+    else:
+      if value > func(vec[imid]): ihi = imid
+      else: ilo = imid+1
+  return imid
+
+# debug functions
+
+def print_lines(txt,lines):
+  print(txt,len(lines))
+  for line in lines:
+    if not line.active: continue
+    print(line.active,distance(points[line.p1].x,points[line.p2].x),
+              line.point1,line.point2)
+
+def print_tris(txt,tris):
+  print(txt,len(tris))
+  for tri in tris:
+    if not tri.active: continue
+    print(tri.active,distance(points[tri.p1].x,points[tri.p2].x),
+              distance(points[tri.p2].x,points[tri.p3].x),
+              distance(points[tri.p3].x,points[tri.p1].x),
+              tri.point1,tri.point2,tri.point3)
+
+
+# read a molecule file with lines
+
+def read_molfile_2d(filename):
+  lines = []
+  line = Line((0.0,0.0,0.0),(1.0,1.0,0.0))
+  lines.append(line)
+  line = Line((1.0,1.0,0.0),(3.0,1.0,0.0))
+  lines.append(line)
+  return lines
+
+# read a molecule file with tris
+
+def read_molfile_3d(filename):
+  tris = []
+  tri = Tri((0.0,0.0,0.0),(1.0,0.0,0.0),(0.0,1.0,0.0))
+  tris.append(tri)
+  tri = Tri((0.0,0.0,0.0),(1.0,0.0,0.0),(0.0,0.0,1.0))
+  tris.append(tri)
+  return tris
+
+# read an STL file with tris
+
+def read_stlflie(filename):
+  tris = []
+  return tris
+
+# create list of unique line end points
+
+def extract_points_2d(lines):
+  points = []
+  hash = {}
+  for line in lines:
+    if line.point1 not in hash:
+      line.p1 = len(points)
+      hash[line.point1] = len(points)
+      pt = line.point1
+      point = Point(pt[0],pt[1],0.0)
+      points.append(point)
+    else: line.p1 = hash[line.point1]
+    if line.point2 not in hash:
+      line.p2 = len(points)
+      hash[line.point2] = len(points)
+      pt = line.point2
+      point = Point(pt[0],pt[1],0.0)
+      points.append(point)
+    else: line.p2 = hash[line.point2]
+  return points
+
+# create list of unique tri corner points
+
+def extract_points_3d(tris):
+  points = []
+  hash = {}
+  for tri in tris:
+    if tri.point1 not in hash:
+      tri.p1 = len(points)
+      hash[tri.point1] = len(points)
+      pt = tri.point1
+      point = Point(pt[0],pt[1],pt[2])
+      points.append(point)
+    else: tri.p1 = hash[tri.point1]
+    if tri.point2 not in hash:
+      tri.p2 = len(points)
+      hash[tri.point2] = len(points)
+      pt = tri.point2
+      point = Point(pt[0],pt[1],pt[2])
+      points.append(point)
+    else: tri.p2 = hash[tri.point2]
+    if tri.point3 not in hash:
+      tri.p3 = len(points)
+      hash[tri.point3] = len(points)
+      pt = tri.point3
+      point = Point(pt[0],pt[1],pt[2])
+      points.append(point)
+    else: tri.p3 = hash[tri.point3]
+  return points
+
+# create list of unique tri edges
+# also create ehash so can search for edges in refine_3d()
+#   key = (p1,p2), value = index into list of edges
+
+def edges_3d(points,tris):
+  hash = {}
+  for i,tri in enumerate(tris):
+    if (tri.p1,tri.p2) in hash: hash[(tri.p1,tri.p2)].append((i,0))
+    elif (tri.p2,tri.p1) in hash: hash[(tri.p2,tri.p1)].append((i,0))
+    else: hash[(tri.p1,tri.p2)] = [(i,0)]
+    if (tri.p2,tri.p3) in hash: hash[(tri.p2,tri.p3)].append((i,1))
+    elif (tri.p3,tri.p2) in hash: hash[(tri.p3,tri.p2)].append((i,1))
+    else: hash[(tri.p2,tri.p3)] = [(i,1)]
+    if (tri.p3,tri.p1) in hash: hash[(tri.p3,tri.p1)].append((i,2))
+    elif (tri.p1,tri.p3) in hash: hash[(tri.p1,tri.p3)].append((i,2))
+    else: hash[(tri.p3,tri.p1)] = [(i,2)]
+
+  edges = []
+  for key,value in hash.items():
+    edge = Edge(key[0],key[1])
+    edge.neigh = [item[0] for item in value]
+    edge.which = [item[1] for item in value]
+    edges.append(edge)
+
+  ehash = {}
+  for iedge,edge in enumerate(edges):
+    ehash[(edge.p1,edge.p2)] = iedge
+    
+  return edges,ehash
+
+# successively refine lines which are too long
+
+def refine_2d(points,lines):
+  sizes = []
+  for iline,line in enumerate(lines):
+    sizes.append((iline,distance(points[line.p1].x,points[line.p2].x)))
+  sizes = sorted(sizes,key=itemgetter(1),reverse=True)
+
+  # loop until no line is too long
+  
+  while sizes[0][1] > thresh:
+    print(sizes)
+    iline = sizes[0][0]
+    dist = sizes[0][1]
+
+    # add new point
+
+    middle = midpt(points[lines[iline].p1].x,points[lines[iline].p2].x)
+    point = Point(middle[0],middle[1],0.0)
+    points.append(point)
+    npoints = len(points)
+    
+    # mark split line as inactive
+    # add 2 new lines from split line
+
+    lines[iline].active = 0
+
+    newline = Line(lines[iline].point1,middle)
+    newline.p1 = lines[iline].p1
+    newline.p2 = npoints - 1
+    lines.append(newline)
+    inewline1 = len(lines) - 1
+
+    newline = Line(lines[iline].point2,middle)
+    newline.p1 = lines[iline].p2
+    newline.p2 = npoints - 1
+    lines.append(newline)
+    inewline2 = len(lines) - 1
+
+    nlines = len(lines)
+
+    # remove split line from sorted list
+    # add 2 new lines to sorted list in appropriate locations
+    # NOTE: need Py 3.10 for key support in bisect()
+    
+    del sizes[0]
+
+    newsize = (inewline1,0.5*dist)
+    #isize = bisect(sizes,newsize,key=sizeindex)
+    isize = mybisect(sizes,newsize,sizeindex,1)
+    sizes.insert(isize,newsize)
+
+    newsize = (inewline2,0.5*dist)
+    #isize = bisect(sizes,newsize,key=sizeindex)
+    isize = mybisect(sizes,newsize,sizeindex,1)
+    sizes.insert(isize,newsize)
+
+# successively refine tris with an edge which is too long
+
+def refine_3d(points,edges,ehash,tris):
+  sizes = []
+  for iedge,edge in enumerate(edges):
+    sizes.append((iedge,distance(points[edge.p1].x,points[edge.p2].x)))
+  sizes = sorted(sizes,key=itemgetter(1),reverse=True)
+  
+  # loop until no tri edge is too long
+
+  while sizes[0][1] > thresh:
+    print(sizes)
+    iedge = sizes[0][0]
+    dist = sizes[0][1]
+
+    # add new point
+
+    middle = midpt(points[edges[iedge].p1].x,points[edges[iedge].p2].x)
+    point = Point(middle[0],middle[1],middle[2])
+    points.append(point)
+    npoints = len(points)
+
+    # loop over tris sharing the split edge
+    #   mark each tri inactive
+    #   add 2 new tris to replace inactive tri
+    #   add new edge between pair of new tris
+    #   reset neighs of non-split and non-new edge for each tri in pair
+    # prev_nedges/ntris = number of edges and tris before adding new ones
+    
+    neigh = edges[iedge].neigh
+    which = edges[iedge].which
+    nedges_prev = len(edges)
+    ntris_prev = len(tris)
+    
+    for itri,iwhich in zip(neigh,which):
+      tris[itri].active = 0
+
+      if iwhich == 0:
+        newtri = Tri(tris[itri].point1,middle,tris[itri].point3)
+        newtri.p1 = tris[itri].p1
+        newtri.p2 = npoints - 1
+        newtri.p3 = tris[itri].p3
+        tris.append(newtri)
+
+        if (tris[itri].p3,tris[itri].p1) in ehash:
+          iedge = ehash[(tris[itri].p3,tris[itri].p1)]
+        else: iedge = ehash[(tris[itri].p1,tris[itri].p3)]
+        index = edges[iedge].neigh.index(itri)
+        edges[iedge].neigh[index] = len(tris)-1
+        edges[iedge].which[index] = 2
+        
+        newtri = Tri(tris[itri].point2,middle,tris[itri].point3)
+        newtri.p1 = tris[itri].p2
+        newtri.p2 = npoints - 1
+        newtri.p3 = tris[itri].p3
+        tris.append(newtri)
+
+        if (tris[itri].p2,tris[itri].p3) in ehash:
+          iedge = ehash[(tris[itri].p2,tris[itri].p3)]
+        else: iedge = ehash[(tris[itri].p3,tris[itri].p2)]
+        index = edges[iedge].neigh.index(itri)
+        edges[iedge].neigh[index] = len(tris)-1
+        edges[iedge].which[index] = 2
+
+        newedge = Edge(tris[itri].p3,npoints-1)
+        newedge.neigh = [len(tris)-2,len(tris)-1]
+        newedge.which = [1,1]
+        edges.append(newedge)
+        ehash[(newedge.p1,newedge.p2)] = len(edges)-1
+
+      elif iwhich == 1:
+        newtri = Tri(tris[itri].point2,middle,tris[itri].point1)
+        newtri.p1 = tris[itri].p2
+        newtri.p2 = npoints - 1
+        newtri.p3 = tris[itri].p1
+        tris.append(newtri)
+
+        if (tris[itri].p1,tris[itri].p2) in ehash:
+          iedge = ehash[(tris[itri].p1,tris[itri].p2)]
+        else: iedge = ehash[(tris[itri].p2,tris[itri].p1)]
+        index = edges[iedge].neigh.index(itri)
+        edges[iedge].neigh[index] = len(tris)-1
+        edges[iedge].which[index] = 2
+
+        newtri = Tri(tris[itri].point3,middle,tris[itri].point1)
+        newtri.p1 = tris[itri].p3
+        newtri.p2 = npoints - 1
+        newtri.p3 = tris[itri].p1
+        tris.append(newtri)
+
+        if (tris[itri].p3,tris[itri].p1) in ehash:
+          iedge = ehash[(tris[itri].p3,tris[itri].p1)]
+        else: iedge = ehash[(tris[itri].p1,tris[itri].p3)]
+        index = edges[iedge].neigh.index(itri)
+        edges[iedge].neigh[index] = len(tris)-1
+        edges[iedge].which[index] = 2
+
+        newedge = Edge(tris[itri].p1,npoints-1)
+        newedge.neigh = [len(tris)-2,len(tris)-1]
+        newedge.which = [1,1]
+        edges.append(newedge)
+        ehash[(newedge.p1,newedge.p2)] = len(edges)-1
+
+      elif iwhich == 2:
+        newtri = Tri(tris[itri].point3,middle,tris[itri].point2)
+        newtri.p1 = tris[itri].p3
+        newtri.p2 = npoints - 1
+        newtri.p3 = tris[itri].p2
+        tris.append(newtri)
+
+        if (tris[itri].p2,tris[itri].p3) in ehash:
+          iedge = ehash[(tris[itri].p2,tris[itri].p3)]
+        else: iedge = ehash[(tris[itri].p3,tris[itri].p2)]
+        index = edges[iedge].neigh.index(itri)
+        edges[iedge].neigh[index] = len(tris)-1
+        edges[iedge].which[index] = 2
+
+        newtri = Tri(tris[itri].point1,middle,tris[itri].point2)
+        newtri.p1 = tris[itri].p1
+        newtri.p2 = npoints - 1
+        newtri.p3 = tris[itri].p2
+        tris.append(newtri)
+        
+        if (tris[itri].p1,tris[itri].p2) in ehash:
+          iedge = ehash[(tris[itri].p1,tris[itri].p2)]
+        else: iedge = ehash[(tris[itri].p2,tris[itri].p1)]
+        index = edges[iedge].neigh.index(itri)
+        edges[iedge].neigh[index] = len(tris)-1
+        edges[iedge].which[index] = 2
+
+        newedge = Edge(tris[itri].p2,npoints-1)
+        newedge.neigh = [len(tris)-2,len(tris)-1]
+        newedge.which = [1,1]
+        edges.append(newedge)
+        ehash[(newedge.p1,newedge.p2)] = len(edges)-1
+
+    # add 2 additional new edges to replace split edge
+    # neigh of each new edge depends on order of points in original tri
+    # both new edges are first edge 0 in all new tris
+
+    newedge1 = Edge(edges[iedge].p1,npoints-1)
+    neigh1 = newedge1.neigh
+    newedge2 = Edge(edges[iedge].p2,npoints-1)
+    neigh2 = newedge1.neigh
+
+    for itri in range(ntris_prev,len(tris)):
+      if edges[iedge].p1 == tris[itri].p1: neigh1.append(itri)
+      else: neigh2.append(itri)
+
+    newedge1.which = (len(neigh1))*[0]
+    newedge2.which = (len(neigh2))*[0]
+
+    edges.append(newedge1)
+    ehash[(newedge1.p1,newedge1.p2)] = len(edges)-1
+    edges.append(newedge2)
+    ehash[(newedge2.p1,newedge2.p2)] = len(edges)-1
+    
+    # remove split edge from sorted list
+    # add all new edges to sorted list in appropriate locations
+    # NOTE: need Py 3.10 for key support in bisect()
+
+    del sizes[0]
+
+    for iedge in range(nedges_prev,len(edges)):
+      newsize = (iedge,distance(points[edges[iedge].p1].x,points[edges[iedge].p2].x))
+      #isize = bisect(sizes,newsize,key=sizeindex)
+      isize = mybisect(sizes,newsize,sizeindex,1)
+      sizes.insert(isize,newsize)
+
+# function called by bisect() to return entry field that list is sorted on
+
+def sizeindex(entry):
+  return entry[-1]
+
+# write a new molecule file with lines
+
+def write_molfile_2d(outfile,lines):
+  print_lines("FINAL",lines)
+
+# write a new molecule file with tris
+
+def write_molfile_3d(outfile,tris):
+  print_tris("FINAL",tris)
+
+# write a new STL file with tris
+
+def write_stlfile(outfile,tris):
+  pass
+
+# ----------
+# main program
+# ----------
+
+# parse command-line args
+
+args = sys.argv[1:]
+narg = len(args)
+
+if narg != 6: error()
+
+dim = int(args[0])
+insource = args[1]
+infile = args[2]
+thresh = float(args[3])
+outsource = args[4]
+outfile = args[5]
+
+if dim != 2 and dim != 3: error("Involid dim argument")
+    
+# read input file
+# lines/tris = list of lines or tris
+
+if insource == "mol" and dim == 2:
+  lines = read_molfile_2d(infile)
+elif insource == "mol" and dim == 3:
+  tris = read_molfile_3d(infile)
+elif insource == "stl" and dim == 3:
+  tris = read_stlfile(infile)
+else:
+  error("Invalid insource argument")
+
+# points = list of unique points
+
+if dim == 2: points = extract_points_2d(lines)
+if dim == 3: points = extract_points_3d(tris)
+
+npoints = len(points)
+if dim == 2:
+  nlines = len(lines)
+  print_lines("INITIAL",lines)
+if dim == 3:
+  ntris = len(tris)
+  print_tris("INITIAL",tris)
+
+# edges = list of unique edges for tris
+# ehash = enables search for a p1,p2 edge in edges
+
+if dim == 3: edges,ehash = edges_3d(points,tris)
+
+# perform refinement
+
+if dim == 2: refine_2d(points,lines)
+if dim == 3: refine_3d(points,edges,ehash,tris)
+  
+# write output file
+
+if outsource == "mol" and dim == 2:
+  write_molfile_2d(outfile,lines)
+elif outsource == "mol" and dim == 3:
+  write_molfile_3d(outfile,tris)
+elif outsource == "stl" and dim == 3:
+  write_stlfile(outfile,tris)
+else:
+  error("Invalid outsource argument")
