@@ -13,9 +13,10 @@
 # Author:  Steve Plimpton (Sandia), sjplimp at gmail.com
 
 # TODO:
-# add support for different in/out filetypes
 # print stats at each stage
 # could also work with local surfs via data and/or dump file
+# howto assign tri type, molID for output into molfile
+#   maybe should be persisted from input molfile (but not input STL)
 
 import sys
 from operator import itemgetter
@@ -135,27 +136,123 @@ def print_tris(txt,tris):
 # read a molecule file with lines
 
 def read_molfile_2d(filename):
+  filelines = open(filename,"r").readlines()[1:]
+
+  nlines = 0
+
+  # read header of molecule file
+  
+  for i,oneline in enumerate(filelines):
+    oneline = oneline.strip()
+    if not oneline: continue
+    if oneline[0] == '#': continue
+    if nlines: break
+    words = oneline.split()
+    if words[1] == "lines": nlines = int(words[0])
+    if nlines <= 0: error("Molecule file header is invalid for 2d lines")
+
+  # read Lines section of molecule file
+
+  section_word = 0
+  count = 0
   lines = []
-  line = Line((0.0,0.0,0.0),(1.0,1.0,0.0))
-  lines.append(line)
-  line = Line((1.0,1.0,0.0),(3.0,1.0,0.0))
-  lines.append(line)
+  
+  for oneline in filelines[i:]:
+    oneline = oneline.strip()
+    if not oneline: continue
+    if section_word == 0:
+      if oneline != "Lines":
+        error("Molecule file section is invalid for 2d lines")
+      section_word = 1
+      continue
+    count += 1
+    words = oneline.split()
+    if int(words[0]) != count:
+      error("Molecule file section is invalid for 2d lines")
+    line = Line((float(words[3]),float(words[4]),0.0),
+                (float(words[5]),float(words[6]),0.0))
+    lines.append(line)
+
+  if count != nlines:
+    error("Molecule file section is invalid for 2d lines")
+    
   return lines
 
 # read a molecule file with tris
 
 def read_molfile_3d(filename):
-  tris = []
-  tri = Tri((0.0,0.0,0.0),(1.0,0.0,0.0),(0.0,1.0,0.0))
-  tris.append(tri)
-  tri = Tri((0.0,0.0,0.0),(1.0,0.0,0.0),(0.0,0.0,1.0))
-  tris.append(tri)
-  return tris
+  filelines = open(filename,"r").readlines()[1:]
 
+  ntris = 0
+
+  # read header of molecule file
+  
+  for i,oneline in enumerate(filelines):
+    oneline = oneline.strip()
+    if not oneline: continue
+    if oneline[0] == '#': continue
+    if ntris: break
+    words = oneline.split()
+    if words[1] == "triangles": ntris = int(words[0])
+    if ntris <= 0: error("Molecule file header is invalid for 3d triangles")
+
+  # read Lines section of molecule file
+
+  section_word = 0
+  count = 0
+  tris = []
+  
+  for oneline in filelines[i:]:
+    oneline = oneline.strip()
+    if not oneline: continue
+    if section_word == 0:
+      if oneline != "Triangles":
+        error("Molecule file section is invalid for 3d triangles")
+      section_word = 1
+      continue
+    count += 1
+    words = oneline.split()
+    if int(words[0]) != count:
+      error("Molecule file section is invalid for 3d triangles")
+    tri = Tri((float(words[3]),float(words[4]),float(words[5])),
+              (float(words[6]),float(words[7]),float(words[8])),
+              (float(words[9]),float(words[10]),float(words[11])))
+    tris.append(tri)
+
+  if count != ntris:
+    error("Molecule file section is invalid for 3d triangles")
+    
+  return tris
+  
 # read an STL file with tris
 
-def read_stlflie(filename):
+def read_stlfile(filename):
+  filelines = open(filename,"r").readlines()
+
+  if not filelines[0].startswith("solid "):
+    error("STL file first line is invalid")
+  if not filelines[-1].startswith("endsolid "):
+    error("STL file last line is invalid")
+
+  filelines = filelines[1:-1]
+  if (len(filelines) % 7) != 0:
+    error("STL file facet format is invalid")
+
   tris = []
+
+  iline = 2
+  while iline < len(filelines):
+    v1 = filelines[iline].split()
+    v2 = filelines[iline+1].split()
+    v3 = filelines[iline+2].split()
+    if v1[0] != "vertex" or v2[0] != "vertex" or v3[0] != "vertex":
+      error("STL file vertex format is invalid")
+    tri = Tri((float(v1[1]),float(v1[2]),float(v1[3])),
+              (float(v2[1]),float(v2[2]),float(v2[3])),
+              (float(v3[1]),float(v3[2]),float(v3[3])))
+    tris.append(tri)
+    iline += 7
+    
   return tris
 
 # create list of unique line end points
@@ -469,19 +566,79 @@ def sizeindex(entry):
 
 # write a new molecule file with lines
 
-def write_molfile_2d(outfile,lines):
-  print_lines("FINAL LINES",lines)
+def write_molfile_2d(outfile,lines,infile,thresh):
+  nactive = 0
+  for line in lines:
+    if line.active: nactive += 1
 
+  fp = open(outfile,"w")
+  print("LAMMPS molecule file created by refine.py from %s with threshold %g\n" %
+        (infile,thresh),file=fp)
+  print("%d lines\n" % nactive,file=fp)
+  print("Lines\n",file=fp)
+
+  count = 0
+  for line in lines:
+    if not line.active: continue
+    count += 1
+    print("%d %d %d %g %g %g %g" % (count,1,1,
+                                    line.point1[0],line.point1[1],
+                                    line.point2[0],line.point2[1]),file=fp)
+  fp.close()
+  
 # write a new molecule file with tris
 
-def write_molfile_3d(outfile,tris):
-  print_tris("FINAL TRIS",tris)
+def write_molfile_3d(outfile,tris,infile,thresh):
+  nactive = 0
+  for tri in tris:
+    if tri.active: nactive += 1
+
+  fp = open(outfile,"w")
+  print("LAMMPS molecule file created by refine.py from %s with threshold %g\n" %
+        (infile,thresh),file=fp)
+  print("%d triangles\n" % nactive,file=fp)
+  print("Triangles\n",file=fp)
+
+  count = 0
+  for tri in tris:
+    if not tri.active: continue
+    count += 1
+    print("%d %d %d %g %g %g %g %g %g %g %g %g" %
+          (count,1,1,
+           tri.point1[0],tri.point1[1],tri.point1[2],
+           tri.point2[0],tri.point2[1],tri.point2[2],
+           tri.point3[0],tri.point3[1],tri.point3[2]),
+          file=fp)
+  fp.close()
 
 # write a new STL file with tris
 
-def write_stlfile(outfile,tris):
-  pass
+def write_stlfile(outfile,tris,infile,thresh):
+  nactive = 0
+  for tri in tris:
+    if tri.active: nactive += 1
 
+  fp = open(outfile,"w")
+  print("solid STL version of %s with threshold %g" %
+        (infile,thresh),file=fp)
+
+  for tri in tris:
+    if not tri.active: continue
+    print("  facet normal 0.0 0.0 0.0",file=fp)
+    print("    outer loop",file=fp)
+    print("      vertex %g %g %g" %
+          (tri.point1[0],tri.point1[1],tri.point1[2]),file=fp)
+    print("      vertex %g %g %g" %
+          (tri.point2[0],tri.point2[1],tri.point2[2]),file=fp)
+    print("      vertex %g %g %g" %
+          (tri.point3[0],tri.point3[1],tri.point3[2]),file=fp)
+    print("    endloop",file=fp)
+    print("  endfacet",file=fp)
+
+  print("endsolid STL version of %s with threshold %g" %
+        (infile,thresh),file=fp)
+  fp.close()
+  
 # ----------
 # main program
 # ----------
@@ -522,17 +679,13 @@ if dim == 3: points = extract_points_3d(tris)
 npoints = len(points)
 if dim == 2:
   nlines = len(lines)
-  print_lines("INITIAL",lines)
 if dim == 3:
   ntris = len(tris)
 
 # edges = list of unique edges for tris
 # ehash = enables search for a p1,p2 edge in edges
 
-if dim == 3:
-  edges,ehash = edges_3d(points,tris)
-  print_edges("INITIAL EDGES",edges)
-  print_tris("INITIAL TRIS",tris)
+if dim == 3: edges,ehash = edges_3d(points,tris)
 
 # perform refinement
 
@@ -542,10 +695,10 @@ if dim == 3: refine_3d(points,edges,ehash,tris)
 # write output file
 
 if outsource == "mol" and dim == 2:
-  write_molfile_2d(outfile,lines)
+  write_molfile_2d(outfile,lines,infile,thresh)
 elif outsource == "mol" and dim == 3:
-  write_molfile_3d(outfile,tris)
+  write_molfile_3d(outfile,tris,infile,thresh)
 elif outsource == "stl" and dim == 3:
-  write_stlfile(outfile,tris)
+  write_stlfile(outfile,tris,infile,thresh)
 else:
   error("Invalid outsource argument")
