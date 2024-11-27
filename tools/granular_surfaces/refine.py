@@ -12,7 +12,8 @@
 #          outfile = molecule or STL filename
 # Author:  Steve Plimpton (Sandia), sjplimp at gmail.com
 
-# NOTES
+# TODO:
+# add support for different in/out filetypes
 # print stats at each stage
 # could also work with local surfs via data and/or dump file
 
