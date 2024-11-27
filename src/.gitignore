@@ -1294,6 +1294,10 @@
 /pair_lebedeva_z.h
 /pair_line_lj.cpp
 /pair_line_lj.h
+/pair_line_gran_hooke.cpp
+/pair_line_gran_hooke.h
+/pair_line_gran_hooke_history.cpp
+/pair_line_gran_hooke_history.h
 /pair_list.cpp
 /pair_list.h
 /pair_lj_charmm_coul_charmm.cpp
@@ -1469,6 +1473,10 @@
 /pair_tracker.cpp
 /pair_tri_lj.cpp
 /pair_tri_lj.h
+/pair_tri_gran_hooke.cpp
+/pair_tri_gran_hooke.h
+/pair_tri_gran_hooke_history.cpp
+/pair_tri_gran_hooke_history.h
 /pair_yukawa_colloid.cpp
 /pair_yukawa_colloid.h
 /pair_wf_cut.cpp
@@ -1555,6 +1563,8 @@
 /smd_material_models.cpp
 /smd_material_models.h
 /smd_math.h
+/surf_extra.cpp
+/surf_extra.h
 /tad.cpp
 /tad.h
 /temper.cpp

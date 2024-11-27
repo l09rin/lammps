@@ -12,6 +12,29 @@
    See the README file in the top-level LAMMPS directory.
 ------------------------------------------------------------------------- */
 
+// NOTE: allow for multiple instances of this fix or not ?
+// NOTE: need to order connections with FLAT first?
+// NOTE: error checks for zero-length lines, duplicate lines
+// NOTE: warn for too-small lines
+// NOTE: more efficient neighbor lists, see Joel's 18 Nov email for ideas
+// NOTE: alter connection info if 2 lines/tris are different types ?
+// NOTE: should this fix produce any output
+//         global array with force on each surf
+//         or global array of forces per molecule ID (consecutive) ?
+//         ditto for particle contact counts ?
+// NOTE: enable fix move transrotate and variable styles ?
+// NOTE: allow use of the scale keyword in the molecule command for lines/tris ?
+// NOTE: what about reduced vs box units in fix_modify move params like fix_move ?
+// NOTE: what about PBC
+//       connecntion finding, for moving surfs, surfs which overlap PBC
+//       how is this handled for local surfs
+// NOTE: init motion instance values to zero when allocate it for first time ?
+// NOTE: could allow non-assignment of type pairs
+//       to enable some particles pass thru some surfs
+// NOTE: print stats on # of surfs, connections, min/max surf sizes
+// NOTE: print stats on fix modify move and type/region effects
+// NOTE: memory usage stats are incomplete: neigh list, per-surf data
+
 #include "fix_surface_global.h"
 
 #include "atom.h"
@@ -39,8 +62,10 @@
 #include "update.h"
 #include "variable.h"
 
+#include <algorithm>
 #include <map>
 #include <tuple>
+#include <unordered_set>
 
 using namespace LAMMPS_NS;
 using namespace FixConst;
@@ -49,99 +74,186 @@ using namespace MathConst;
 using namespace MathExtra;
 using namespace SurfExtra;
 
-static constexpr int MAX_GROUP = 32;
-
-enum{TYPE,MOLECULE,ID};
-enum{LT,LE,GT,GE,EQ,NEQ,BETWEEN};
-
 enum{SPHERE,LINE,TRI};           // also in DumpImage
 enum{LINEAR,WIGGLE,ROTATE,TRANSROT,VARIABLE};
 
 enum{FLAT,CONCAVE,CONVEX};
 enum{SAME_SIDE,OPPOSITE_SIDE};
 
-#define FLATTHRESH 0.01
+#define FLATTHRESH 1.0-cos(MY_PI/180.0)    // default = 1 degree
 #define DELTA 128
+#define DELTACONTACTS 4
+#define DELTAMODEL 1    // make larger after debugging
+#define DELTAMOTION 1   // make larger after debugging
+#define MAXSURFTYPE 1024  // extreme, so can reduce it later
 
 /* ---------------------------------------------------------------------- */
 
 FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
   Fix(lmp, narg, arg), tstr(nullptr)
 {
-  if (narg < 11) error->all(FLERR,"Illegal fix surface/global command");
+  if (!atom->radius_flag || !atom->omega_flag)
+    error->all(FLERR,"Fix surface/global requires atom attributes radius and omega");
 
-  if (!atom->omega_flag) error->all(FLERR,"Fix surface/global requires atom attribute omega");
-  if (!atom->radius_flag) error->all(FLERR,"Fix surface/global requires atom attribute radius");
+  dimension = domain->dimension;
 
-  // set interaction style
-  // disable bonded/history option for now
+  // process one or more inputs
+  // read triangles/lines from molecule template IDs or STL files
+  // create a map to store unique points
+  //   key = xyz coords of a point
+  //   value = index into unique points vector
 
-  model = new GranularModel(lmp);
-  model->contact_type = SURFACE;
+  npoints = maxpoints = 0;
+  nlines = ntris = 0;
+  points = nullptr;
+  lines = nullptr;
+  tris = nullptr;
 
-  heat_flag = 0;
-  int classic_flag = 1;
-  if (strcmp(arg[4], "granular") == 0) classic_flag = 0;
+  int ninput = 0;
+  hash = new std::map<std::tuple<double,double,double>,int>();
 
-  // wall/particle coefficients
-
-  int iarg;
-  if (classic_flag) {
-    iarg = model->define_classic_model(arg, 4, narg);
-
-    while (iarg < narg) {
-      if (strcmp(arg[iarg],"limit_damping") == 0) {
-        model->limit_damping = 1;
-        iarg += 1;
-      }
-    }
-
-  } else {
-    iarg = 5;
-    iarg = model->add_sub_model(arg, iarg, narg, NORMAL);
-
-    while (iarg < narg) {
-      if (strcmp(arg[iarg], "damping") == 0) {
-        iarg = model->add_sub_model(arg, iarg + 1, narg, DAMPING);
-      } else if (strcmp(arg[iarg], "tangential") == 0) {
-        iarg = model->add_sub_model(arg, iarg + 1, narg, TANGENTIAL);
-      } else if (strcmp(arg[iarg], "rolling") == 0) {
-        iarg = model->add_sub_model(arg, iarg + 1, narg, ROLLING);
-      } else if (strcmp(arg[iarg], "twisting") == 0) {
-        iarg = model->add_sub_model(arg, iarg + 1, narg, TWISTING);
-      } else if (strcmp(arg[iarg], "heat") == 0) {
-        iarg = model->add_sub_model(arg, iarg + 1, narg, HEAT);
-        heat_flag = 1;
-      } else if (strcmp(arg[iarg],"limit_damping") == 0) {
-        model->limit_damping = 1;
-        iarg += 1;
-      } else {
-        break;
-      }
-    }
+  int iarg = 3;
+  while (iarg < narg) {
+    if (strcmp(arg[iarg],"input") == 0) {
+      if (iarg+2 > narg) error->all(FLERR,"Illegal fix surface/global command");
+      if (strcmp(arg[iarg+1],"mol") == 0) {
+	if (iarg+3 > narg) error->all(FLERR,"Illegal fix surface/global command");
+	extract_from_molecule(arg[iarg+2]);
+	iarg += 3;
+      } else if (strcmp(arg[iarg+1],"stl") == 0) {
+	if (iarg+4 > narg) error->all(FLERR,"Illegal fix surface/global command");
+	int stype = utils::inumeric(FLERR,arg[iarg+2],false,lmp);
+	extract_from_stlfile(arg[iarg+3]);
+	iarg += 4;
+      } else error->all(FLERR,"Illegal fix surface/global command");
+    } else break;
+    
+    ninput++;
   }
 
-  // define default damping sub model if unspecified, takes no args
+  delete hash;
+  if (ninput == 0)
+    error->all(FLERR,"Fix surface/global command requires input keyword");
 
-  if (!model->damping_model) model->construct_sub_model("viscoelastic", DAMPING);
-  model->init();
+  // process one or more granular models
+  // disable bonded/history option for now
 
-  size_history = model->size_history;
-  if (model->beyond_contact) size_history += 1; //Need to track if particle is touching
-  if (size_history == 0) use_history = 0;
-  else use_history = 1;
-
-  // optional args
-
-  int scaleflag = 0;
-  int Twall_defined = 0;
-
+  models = nullptr;
+  nmodel = maxmodel = 0;
+  heat_flag = 0;
+  
   while (iarg < narg) {
-    if (strcmp(arg[iarg],"units") == 0) {
+    if (strcmp(arg[iarg],"model") == 0) {
+      if (iarg+4 > narg) error->all(FLERR,"Illegal fix surface/global command");
+      
+      if (nmodel == maxmodel) {
+	maxmodel += DELTAMODEL;
+	modeltypes = (ModelTypes *)
+	  memory->srealloc(models,maxmodel*sizeof(ModelTypes),"surf/gloabl:modeltypes");
+	models = (Granular_NS::GranularModel **)
+	  memory->srealloc(models,maxmodel*sizeof(Granular_NS::GranularModel *),
+			   "surf/gloabl:models");
+      }
+
+      models[nmodel] = model = new GranularModel(lmp);
+
+      // assign range of particle and surf types to this model
+      // ues MAXSURFTYPE for now, in case smax keyword extends input surf types
+      
+      utils::bounds(FLERR, arg[iarg+1], 1, atom->ntypes,
+		    modeltypes[nmodel].plo, modeltypes[nmodel].phi, error);
+      utils::bounds(FLERR, arg[iarg+2], 1, MAXSURFTYPE,
+		    modeltypes[nmodel].slo, modeltypes[nmodel].shi, error);
+      nmodel++;
+
+      model->contact_type = SURFACE;
+
+      int classic_flag = 1;
+      if (strcmp(arg[iarg+3], "granular") == 0) classic_flag = 0;
+      iarg += 4;
+      
+      if (classic_flag) {
+	iarg = model->define_classic_model(arg, iarg, narg);
+	if (strcmp(arg[iarg],"limit_damping") == 0) {
+	  model->limit_damping = 1;
+	  iarg++;
+	}
+      } else {
+	iarg = model->add_sub_model(arg, iarg, narg, NORMAL);
+	while (iarg < narg) {
+	  if (strcmp(arg[iarg], "damping") == 0) {
+	    iarg = model->add_sub_model(arg, iarg + 1, narg, DAMPING);
+	  } else if (strcmp(arg[iarg], "tangential") == 0) {
+	    iarg = model->add_sub_model(arg, iarg + 1, narg, TANGENTIAL);
+	  } else if (strcmp(arg[iarg], "rolling") == 0) {
+	    iarg = model->add_sub_model(arg, iarg + 1, narg, ROLLING);
+	  } else if (strcmp(arg[iarg], "twisting") == 0) {
+	    iarg = model->add_sub_model(arg, iarg + 1, narg, TWISTING);
+	  } else if (strcmp(arg[iarg], "heat") == 0) {
+	    iarg = model->add_sub_model(arg, iarg + 1, narg, HEAT);
+	    heat_flag = 1;
+	  } else if (strcmp(arg[iarg],"limit_damping") == 0) {
+	    model->limit_damping = 1;
+	    iarg++;
+	  } else break;
+	}
+      }
+
+      // define default damping sub model
+      // if unspecified, takes no args
+      // JOEL NOTE: is damping_model check only for granular or also classic ?
+
+      if (!model->damping_model) model->construct_sub_model("viscoelastic", DAMPING);
+      
+      model->init();
+
+      // JOEL NOTE: do size_history and use_history apply to each model or all models ?
+
+      size_history = model->size_history;
+      if (model->beyond_contact) size_history += 1;   // track if particle is touching
+      if (size_history == 0) use_history = 0;
+      else use_history = 1;
+
+    } else break;
+  }
+
+  if (nmodel == 0)
+    error->all(FLERR,"Fix surface/global command requires model keyword");
+
+  // maxsurftype = max surf type of any input surf (for now)
+  
+  int maxsurftype = 0;
+  if (dimension == 2) {
+    for (int i = 0; i < nlines; i++)
+      maxsurftype = MAX(maxsurftype,lines[i].type);
+  } else {
+    for (int i = 0; i < ntris; i++)
+      maxsurftype = MAX(maxsurftype,tris[i].type);
+  }
+
+  // optional command-line args
+  // smaxtype overrides max surf type of input surfs
+  // flat overrides FLATTHRESH of one degree
+  
+  int Twall_defined = 0;
+  double flatthresh = FLATTHRESH;
+  
+  while (iarg < narg) {
+    if (strcmp(arg[iarg],"smaxtype") == 0) {
       if (iarg+2 > narg) error->all(FLERR,"Illegal fix surface/global command");
-      if (strcmp(arg[iarg+1],"box") == 0) scaleflag = 0;
-      else if (strcmp(arg[iarg+1],"lattice") == 0) scaleflag = 1;
-      else error->all(FLERR,"Illegal fix surface/global command");
+      int smaxtype = utils::inumeric(FLERR,arg[iarg+1],false,lmp);
+      if (smaxtype > MAXSURFTYPE)
+	error->all(FLERR,"Fix surface/global smaxtype > MAXSURFTYPE");
+      if (smaxtype < maxsurftype)
+	error->all(FLERR,"Fix surface/global smaxtype < input surf types");
+      maxsurftype = smaxtype;
+      iarg += 2;
+    } else if (strcmp(arg[iarg],"flag") == 0) {
+      if (iarg+2 > narg) error->all(FLERR,"Illegal fix surface/global command");
+      double flat = utils::numeric(FLERR,arg[iarg+1],false,lmp);
+      if (flat < 0.0 || flat > 90.0)
+	error->all(FLERR,"Invalid value for fix surface/global flat");
+      flatthresh = 1.0 - cos(MY_PI*flat/180.0);
       iarg += 2;
     } else if (strcmp(arg[iarg],"temperature") == 0) {
       if (iarg+2 > narg) error->all(FLERR,"Illegal fix surface/global command");
@@ -155,37 +267,69 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
     } else error->all(FLERR,"Illegal fix surface/global command");
   }
 
-  if (heat_flag != Twall_defined)
-    error->all(FLERR, "Must define wall temperature with heat model");
+  if (heat_flag && !Twall_defined)
+    error->all(FLERR, "Must define wall temperature with a heat model");
 
+  // reset modeltypes shi from MAXSURFTYPE to maxsurtype
+  // initialize types2model for all particle/surf type pairs
+  // check that a model has been assigned to every type pair
+  
+  for (int i = 0; i < nmodel; i++)
+    if (modeltypes[i].shi == MAXSURFTYPE) modeltypes[i].shi = maxsurftype;
+
+  types2model = new Granular_NS::GranularModel**[atom->ntypes+1];
+  for (int i = 1; i <= atom->ntypes; i++)
+    types2model[i] = new Granular_NS::GranularModel*[maxsurftype+1];
+  for (int i = 1; i <= atom->ntypes; i++)
+    for (int j = 1; j <= maxsurftype; j++)
+      types2model[i][j] = nullptr;
+  
+  for (int m = 0; m < nmodel; m++)
+    for (int i = modeltypes[m].plo; i <= modeltypes[m].phi; i++)
+      for (int j = modeltypes[m].slo; j <= modeltypes[m].shi; j++)
+	types2model[i][j] = models[m];
+
+  for (int i = 1; i <= atom->ntypes; i++)
+    for (int j = 1; j <= maxsurftype; j++)
+      if (!types2model[i][j])
+	error->all(FLERR,"Fix surface/global type pair is missing a granular model");
+  
   // initializations
 
-  dimension = domain->dimension;
-
-  points = nullptr;
-  lines = nullptr;
-  tris = nullptr;
+  if (dimension == 2) nsurf = nlines;
+  else nsurf = ntris;
 
   nmotion = maxmotion = 0;
   motions = NULL;
+  anymove = 0;
 
   points_lastneigh = nullptr;
   points_original = nullptr;
   xsurf_original = nullptr;
-
+  pointmove = nullptr;
+  
   neigh_p1 = neigh_p2 = nullptr;
   pwhich_p1 = pwhich_p2 = nullptr;
   nside_p1 = nside_p2 = nullptr;
   aflag_p1 = aflag_p2 = nullptr;
 
-  elist = nullptr;
-  clist = nullptr;
+  neigh_e1 = neigh_e2 = neigh_e3 = nullptr;
+  ewhich_e1 = ewhich_e2 = ewhich_e3 = nullptr;
+  nside_e1 = nside_e2 = nside_e3 =nullptr;
+  aflag_e1 = aflag_e2 = aflag_e3 = nullptr;
+  neigh_c1 = neigh_c2 = neigh_c3 = nullptr;
+  cwhich_c1 = cwhich_c2 = cwhich_c3 = nullptr;
 
   connect2d = nullptr;
   connect3d = nullptr;
 
   xsurf = vsurf = omegasurf = nullptr;
   radsurf = nullptr;
+
+  contact_surfs = nullptr;
+  contact_forces = nullptr;
+  nmax_contact_surfs = 0;
+  nmax_contact_forces = 0;
 
   nmax = 0;
   mass_rigid = nullptr;
@@ -207,28 +351,19 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
   imflag = nullptr;
   imdata = nullptr;
 
+  type2motion = new int[maxsurftype+1];
+  
   firsttime = 1;
 
-  // define points/lines/tris and their connectivity
-  // done via molecule template ID or STL file
-  // first check if arg is valid molecute template ID, else treat as STL file
+  // initialize surface attributes
+  
+  surface_attributes();
 
-  int imol = atom->find_molecule(arg[3]);
-  if (imol >= 0) extract_from_molecules(arg[3]);
-  else extract_from_stlfile(arg[3]);
-
+  // compute connectivity of triangles/lines
+  // create Connect3d or Connect2d data structs 
+  
   if (dimension == 2) connectivity2d_global();
   else connectivity3d_global();
-
-  nsurf = nlines;
-  if (dimension == 3) nsurf = ntris;
-
-  gnames = new char*[MAX_GROUP];
-  bitmask = new int[MAX_GROUP];
-  for (int i = 0; i < MAX_GROUP; i++) gnames[i] = nullptr;
-  for (int i = 0; i < MAX_GROUP; i++) bitmask[i] = 1 << i;
-
-  surface_attributes();
 }
 
 /* ---------------------------------------------------------------------- */
@@ -239,12 +374,18 @@ FixSurfaceGlobal::~FixSurfaceGlobal()
   memory->sfree(lines);
   memory->sfree(tris);
 
-  // NOTE: need to free motions and their contents
-
   memory->destroy(points_lastneigh);
   memory->destroy(points_original);
   memory->destroy(xsurf_original);
+  memory->destroy(pointmove);
 
+  memory->sfree(modeltypes);
+  for (int i = 0; i < nmodel; i++) delete models[i];
+  memory->sfree(models);
+
+  for (int i = 1; i <= atom->ntypes; i++) delete [] types2model[i];
+  delete [] types2model;
+  
   memory->destroy(neigh_p1);
   memory->destroy(neigh_p2);
   memory->destroy(pwhich_p1);
@@ -254,11 +395,34 @@ FixSurfaceGlobal::~FixSurfaceGlobal()
   memory->destroy(aflag_p1);
   memory->destroy(aflag_p2);
 
-  memory->destroy(elist);
-  memory->destroy(clist);
+  memory->destroy(neigh_e1);
+  memory->destroy(neigh_e2);
+  memory->destroy(neigh_e3);
+  memory->destroy(ewhich_e1);
+  memory->destroy(ewhich_e2);
+  memory->destroy(ewhich_e3);
+  memory->destroy(nside_e1);
+  memory->destroy(nside_e2);
+  memory->destroy(nside_e3);
+  memory->destroy(aflag_e1);
+  memory->destroy(aflag_e2);
+  memory->destroy(aflag_e3);
+  
+  memory->destroy(neigh_c1);
+  memory->destroy(neigh_c2);
+  memory->destroy(neigh_c3);
+  memory->destroy(cwhich_c1);
+  memory->destroy(cwhich_c2);
+  memory->destroy(cwhich_c3);
 
   memory->sfree(connect2d);
   memory->sfree(connect3d);
+
+  memory->sfree(contact_surfs);
+  memory->destroy(contact_surfs);
+
+  memory->sfree(contact_forces);
+  memory->destroy(contact_forces);
 
   memory->destroy(xsurf);
   memory->destroy(vsurf);
@@ -267,10 +431,13 @@ FixSurfaceGlobal::~FixSurfaceGlobal()
 
   memory->destroy(mass_rigid);
 
+  memory->sfree(motions);
+  delete [] type2motion;
+  
   delete list;
   delete listhistory;
   delete [] zeroes;
-  delete[] tstr;
+  delete [] tstr;
 
   if (use_history)
     modify->delete_fix("NEIGH_HISTORY_SURFACE_GLOBAL_" + std::to_string(instance_me));
@@ -293,7 +460,9 @@ void FixSurfaceGlobal::post_constructor()
     fix_history = nullptr;
 }
 
-/* ---------------------------------------------------------------------- */
+/* ----------------------------------------------------------------------
+   mask for INITIAL_INTEGRATE will be set by fix_modify move
+---------------------------------------------------------------------- */
 
 int FixSurfaceGlobal::setmask()
 {
@@ -320,7 +489,9 @@ void FixSurfaceGlobal::init()
   }
 
   // define history indices
-
+  // JOEL NOTE: WHat are "beyond" contact models ?
+  //            Why is this check not made in constructor ?
+  
   int next_index = 0;
   if (model->beyond_contact) //next_index = 1;
     error->all(FLERR, "Beyond contact models not currenty supported");
@@ -348,9 +519,12 @@ void FixSurfaceGlobal::init()
 
   if (tstr) {
     tvar = input->variable->find(tstr);
-    if (tvar < 0) error->all(FLERR, "Variable {} for fix surface/global does not exist", tstr);
+    if (tvar < 0)
+      error->all(FLERR, "Variable {} for fix surface/global does not exist", tstr);
     if (! input->variable->equalstyle(tvar))
-      error->all(FLERR, "Variable {} for fix surface/global must be an equal style variable", tstr);
+      error->all(FLERR,
+		 "Variable {} for fix surface/global must be an equal style variable",
+		 tstr);
   }
 }
 
@@ -368,119 +542,58 @@ void FixSurfaceGlobal::setup_pre_neighbor()
 
 void FixSurfaceGlobal::initial_integrate(int vflag)
 {
-  /*
-  double ddotr;
-  double a[3],b[3],c[3],d[3],disp[3],p12[3],p13[3];
-  double *pt,*p1,*p2,*p3;
-
-  double delta = (update->ntimestep - time_origin) * dt;
-
-  // for rotate by right-hand rule around omega:
-  // P = point = vector = point of rotation
-  // R = vector = axis of rotation
-  // w = omega of rotation (from period)
-  // X0 = xoriginal = initial coord of atom
-  // R0 = runit = unit vector for R
-  // D = X0 - P = vector from P to X0
-  // C = (D dot R0) R0 = projection of atom coord onto R line
-  // A = D - C = vector from R line to X0
-  // B = R0 cross A = vector perp to A in plane of rotation
-  // A,B define plane of circular rotation around R line
-  // X = P + C + A cos(w*dt) + B sin(w*dt)
-  // V = w R0 cross (A cos(w*dt) + B sin(w*dt))
-
-  if (mstyle == ROTATE) {
-    double arg = omega_rotate * delta;
-    double cosine = cos(arg);
-    double sine = sin(arg);
-
-    for (int i = 0; i < npoints; i++) {
-      d[0] = points_original[i][0] - rpoint[0];
-      d[1] = points_original[i][1] - rpoint[1];
-      d[2] = points_original[i][2] - rpoint[2];
-
-      ddotr = d[0]*runit[0] + d[1]*runit[1] + d[2]*runit[2];
-      c[0] = ddotr*runit[0];
-      c[1] = ddotr*runit[1];
-      c[2] = ddotr*runit[2];
-      a[0] = d[0] - c[0];
-      a[1] = d[1] - c[1];
-      a[2] = d[2] - c[2];
-      b[0] = runit[1]*a[2] - runit[2]*a[1];
-      b[1] = runit[2]*a[0] - runit[0]*a[2];
-      b[2] = runit[0]*a[1] - runit[1]*a[0];
-      disp[0] = a[0]*cosine  + b[0]*sine;
-      disp[1] = a[1]*cosine  + b[1]*sine;
-      disp[2] = a[2]*cosine  + b[2]*sine;
-
-      pt = points[i].x;
-      pt[0] = rpoint[0] + c[0] + disp[0];
-      pt[1] = rpoint[1] + c[1] + disp[1];
-      pt[2] = rpoint[2] + c[2] + disp[2];
-    }
-
-    for (int i = 0; i < nsurf; i++) {
-      d[0] = xsurf_original[i][0] - rpoint[0];
-      d[1] = xsurf_original[i][1] - rpoint[1];
-      d[2] = xsurf_original[i][2] - rpoint[2];
-      ddotr = d[0]*runit[0] + d[1]*runit[1] + d[2]*runit[2];
-      c[0] = ddotr*runit[0];
-      c[1] = ddotr*runit[1];
-      c[2] = ddotr*runit[2];
-      a[0] = d[0] - c[0];
-      a[1] = d[1] - c[1];
-      a[2] = d[2] - c[2];
-      b[0] = runit[1]*a[2] - runit[2]*a[1];
-      b[1] = runit[2]*a[0] - runit[0]*a[2];
-      b[2] = runit[0]*a[1] - runit[1]*a[0];
-      disp[0] = a[0]*cosine  + b[0]*sine;
-      disp[1] = a[1]*cosine  + b[1]*sine;
-      disp[2] = a[2]*cosine  + b[2]*sine;
-
-      xsurf[i][0] = rpoint[0] + c[0] + disp[0];
-      xsurf[i][1] = rpoint[1] + c[1] + disp[1];
-      xsurf[i][2] = rpoint[2] + c[2] + disp[2];
-      vsurf[i][0] = omega_rotate * (runit[1]*disp[2] - runit[2]*disp[1]);
-      vsurf[i][1] = omega_rotate * (runit[2]*disp[0] - runit[0]*disp[2]);
-      vsurf[i][2] = omega_rotate * (runit[0]*disp[1] - runit[1]*disp[0]);
-    }
-
-    if (dimension == 3) {
-      for (int i = 0; i < nsurf; i++) {
-        p1 = points[tris[i].p1].x;
-        p2 = points[tris[i].p2].x;
-        p3 = points[tris[i].p3].x;
-        MathExtra::sub3(p1,p2,p12);
-        MathExtra::sub3(p1,p3,p13);
-        MathExtra::cross3(p12,p13,tris[i].norm);
-        MathExtra::norm3(tris[i].norm);
-      }
-    }
+  int imotion,mstyle;
+  
+  for (int i = 0; i < nsurf; i++) {
+    if (dimension == 2) imotion = type2motion[lines[i].type];
+    else imotion = type2motion[tris[i].type];
+    if (imotion < 0) continue;
+    
+    mstyle = motions[imotion].mstyle;
+    if (mstyle == LINEAR) move_linear(imotion,i);
+    else if (mstyle == WIGGLE) move_wiggle(imotion,i);
+    else if (mstyle == ROTATE) move_rotate(imotion,i);
+    //else if (mstyle == TRANSROTATE) move_rotate(imotion,i);
+    //else if (mstyle == VARIABLE) move_rotate(imotion,i);
   }
 
+  // clear pointmove settings
+
+  if (dimension == 2) {
+    for (int i = 0; i < nlines; i++) {
+      if (type2motion[lines[i].type] < 0) continue;
+      pointmove[lines[i].p1] = 0;
+      pointmove[lines[i].p2] = 0;
+    }
+  } else {
+    for (int i = 0; i < ntris; i++) {
+      if (type2motion[tris[i].type] < 0) continue;
+      pointmove[tris[i].p1] = 0;
+      pointmove[tris[i].p2] = 0;
+      pointmove[tris[i].p3] = 0;
+    }
+  }
+  
   // trigger reneighbor if any point has moved skin/2 distance
 
   double dx,dy,dz,rsq;
-
+  double *pt;
+  
   int triggerflag = 0;
 
-  if (mstyle != NONE) {
-    for (int i = 0; i < npoints; i++) {
-      pt = points[i].x;
-      dx = pt[0] - points_lastneigh[i][0];
-      dy = pt[1] - points_lastneigh[i][1];
-      dz = pt[2] - points_lastneigh[i][2];
-      rsq = dx*dx + dy*dy + dz*dz;
-      if (rsq > triggersq) {
-        triggerflag = 1;
-        break;
-      }
+  for (int i = 0; i < npoints; i++) {
+    pt = points[i].x;
+    dx = pt[0] - points_lastneigh[i][0];
+    dy = pt[1] - points_lastneigh[i][1];
+    dz = pt[2] - points_lastneigh[i][2];
+    rsq = dx*dx + dy*dy + dz*dz;
+    if (rsq > triggersq) {
+      triggerflag = 1;
+      break;
     }
   }
 
   if (triggerflag) next_reneighbor = update->ntimestep;
-
-  */
 }
 
 /* ----------------------------------------------------------------------
@@ -535,15 +648,13 @@ void FixSurfaceGlobal::pre_neighbor()
   // store current point positions for future neighbor trigger check
   // check is performed in intitial_integrate()
 
-  /*
-  if (mstyle != NONE) {
+  if (anymove) {
     for (i = 0; i < npoints; i++) {
       points_lastneigh[i][0] = points[i].x[0];
       points_lastneigh[i][1] = points[i].x[1];
       points_lastneigh[i][2] = points[i].x[2];
     }
   }
-  */
 
   int inum = 0;
   ipage->reset();
@@ -567,7 +678,6 @@ void FixSurfaceGlobal::pre_neighbor()
     radi = radius[i];
 
     // for now, loop over all surfs
-    // NOTE: use a more sophisticated neighbor check
 
     for (j = 0; j < nsurf; j++) {
       delx = xtmp - xsurf[j][0];
@@ -629,7 +739,8 @@ void FixSurfaceGlobal::pre_neighbor()
 
 void FixSurfaceGlobal::post_force(int vflag)
 {
-  int i,j,k,ii,jj,inum,jnum,jflag,otherflag;
+  int i,j,k,n,m,ii,jj,inum,jnum,jflag,otherflag;
+  int n_contact_surfs, n_contact_forces;
   double xtmp,ytmp,ztmp,radi,delx,dely,delz;
   double meff;
   int *ilist,*jlist,*numneigh,**firstneigh;
@@ -640,6 +751,8 @@ void FixSurfaceGlobal::post_force(int vflag)
 
   model->history_update = 1;
   if (update->setupflag) model->history_update = 0;
+
+  std::unordered_set<int> processed_contacts;
 
   // if just reneighbored:
   // update rigid body masses for owned atoms if using FixRigid
@@ -710,6 +823,7 @@ void FixSurfaceGlobal::post_force(int vflag)
       allhistory = firsthistory[i];
     }
 
+    n_contact_surfs = 0;
     for (jj = 0; jj < jnum; jj++) {
       j = jlist[jj];
 
@@ -719,7 +833,7 @@ void FixSurfaceGlobal::post_force(int vflag)
       rsq = delx * delx + dely * dely + delz * delz;
 
       // skip contact check if particle/surf are too far apart
-      
+
       radsum = radi + radsurf[j];
       if (rsq > radsum * radsum) {
         if (use_history) {
@@ -774,10 +888,61 @@ void FixSurfaceGlobal::post_force(int vflag)
       }
 
       // append surf to list of contacts
-      
+
+      if (n_contact_surfs + 1 > nmax_contact_surfs) {
+        nmax_contact_surfs += DELTACONTACTS;
+        memory->grow(contact_surfs, nmax_contact_surfs * sizeof(ContactSurf),
+                                      "surface/global:contact_surfs");
+      }
+
+      if (dimension == 2) {
+        contact_surfs[n_contact_surfs].index = j;
+        contact_surfs[n_contact_surfs].type = lines[j].type;
+        contact_surfs[n_contact_surfs].overlap = sqrt(rsq) - radsum;
+        contact_surfs[n_contact_surfs].r[0] = dr[0];
+        contact_surfs[n_contact_surfs].r[1] = dr[1];
+        contact_surfs[n_contact_surfs].r[2] = dr[2];
+      }
+
+      n_contact_surfs += 1;
     }
 
-    // Reduce set of contacts
+    // reduce set of contacts
+    
+    std::sort(contact_surfs, contact_surfs + n_contact_surfs, [](ContactSurf a, ContactSurf b) {return a.overlap > b.overlap;});
+
+    n_contact_forces = 0;
+    processed_contacts.clear();
+
+    for (n = 0; n < n_contact_surfs; n++) {
+      j = contact_surfs[n].index;
+
+      if (processed_contacts.find(j) != processed_contacts.end()) continue;
+      processed_contacts.insert(j);
+
+      n_contact_forces += 1;
+
+      if (n_contact_forces + 1 > nmax_contact_forces) {
+        nmax_contact_forces += DELTACONTACTS;
+        memory->grow(contact_forces, nmax_contact_forces * sizeof(ContactForce),
+                                      "surface/global:contact_forces");
+      }
+
+      if (dimension == 2) {
+        for (m = 0; m < connect2d[j].np1; m++) {
+          k = connect2d[j].neigh_p1[m];
+          //append to connected_surfs
+        }
+        for (m = 0; m < connect2d[j].np2; m++) {
+          k = connect2d[j].neigh_p2[m];
+        }
+
+        // loop through connected surfs...
+      } else {
+        continue; // 2d to start
+      }
+    }
+
 
     /*
     For contact in reduced contacts:
@@ -863,67 +1028,192 @@ void FixSurfaceGlobal::post_force(int vflag)
 
 /* ----------------------------------------------------------------------
    process fix_modify commands specific to fix surface/global
-   when motion is active, set INTITIAL_INTEGRATE mask flag
+   move and type/region
 ------------------------------------------------------------------------- */
 
 int FixSurfaceGlobal::modify_param(int narg, char **arg)
 {
-  // group options
-
-  if (strcmp(arg[0],"group") == 0) {
-    if (narg < 4) error->all(FLERR,"Illegal fix_modify command");
-
-    int igroup = find_group(arg[1]);
-    if (igroup < 0) igroup = add_group(arg[1]);
-    int bit = bitmask[igroup];
-
-    int argcount = modify_params_group(igroup,bit,narg-2,&arg[2]);
-
-    return argcount + 2;
-  }
-
-  // move options
+  // move keyword
 
   if (strcmp(arg[0],"move") == 0) {
-    if (narg < 2) error->all(FLERR,"Illegal fix_modify command");
+    if (narg < 3) error->all(FLERR,"Illegal fix_modify move command");
+
+    int lo,hi;
+    int *stypes = new int[maxsurftype+1];
+    for (int i = 1; i <= maxsurftype; i++) stypes[i] = 0;
+
+    auto fields = Tokenizer(arg[1], ",").as_vector();
+    for (int ifield = 0; ifield < fields.size(); ifield++) {
+      utils::bounds(FLERR, fields[ifield], 1, maxsurftype, lo, hi, error);
+      for (int i = lo; i <= hi; i++) stypes[i] = 1;
+    }
+    
+    if (strcmp(arg[2],"none") == 0) {
+      for (int itype = 1; itype <= maxsurftype; itype++) {
+	if (type2motion[itype] < 0) continue;
+	int imotion = type2motion[itype];
+	motions[imotion].active = 0;
+	type2motion[itype] = -1;
+
+	// set vsurf and omegasurf to zero for itype surfs
+
+	int stype;
+	for (int i = 0; i < nsurf; i++) {
+	  if (dimension == 2) stype = lines[i].type;
+	  else stype = tris[i].type;
+	  if (stype == itype) {
+	    vsurf[i][0] = vsurf[i][1] = vsurf[i][2] = 0.0;
+	    omegasurf[i][0] = omegasurf[i][1] = omegasurf[i][2] = 0.0;
+	  }
+	}
+      }
+      
+      anymove = 0;
+      for (int i = 1; i <= maxsurftype; i++)
+	if (type2motion[i] >= 0) anymove = 1;
+      
+      if (!anymove) {
+	memory->destroy(points_lastneigh);
+	memory->destroy(points_original);
+	memory->destroy(xsurf_original);
+	memory->destroy(pointmove);
+	points_lastneigh = nullptr;
+	points_original = nullptr;
+	xsurf_original = nullptr;
+	pointmove = nullptr;
+	
+	int ifix = modify->find_fix(id);
+	modify->fmask[ifix] &= ~INITIAL_INTEGRATE;
+	force_reneighbor = 0;
+	next_reneighbor = -1;
+      }
+      
+      delete [] stypes;
+      return 3;
+    }
+
+    // new motion operation
+    // re-use an inactive motion or add a new motion to list
+    
+    int imotion;
+    for (imotion = 0; imotion < nmotion; imotion++)
+      if (!motions[imotion].active) break;
+
+    if (imotion == nmotion) {
+      if (nmotion == maxmotion) {
+	maxmotion += DELTAMOTION;
+	motions = (Motion *)
+	  memory->srealloc(motions,maxmotion*sizeof(Motion),"surface/global:motion");
+      }
+      nmotion++;
+    }
+
+    motions[imotion].active = 0;
+
+    // use stypes to set type2motion
+
+    for (int itype = 1; itype <= maxsurftype; itype++)
+      if (stypes[itype]) type2motion[itype] = imotion;
+
+    // if first motion, allocate points and surf memory
+
+    if (!anymove) {
+      memory->create(points_lastneigh,npoints,3,"surface/global:points_lastneigh");
+      memory->create(points_original,npoints,3,"surface/global:points_original");
+      memory->create(xsurf_original,nsurf,3,"surface/global:xsurf_original");
+      memory->create(pointmove,npoints,"surface/global:pointmove");
+    }
+
+    anymove = 1;
+    
+    // parse additional move style arguments
+    
+    int styleargs = modify_param_move(&motions[imotion],narg-2,&arg[2]);
 
     int ifix = modify->find_fix(id);
-
-    if (strcmp(arg[1],"none") == 0) {
-      nmotion = 0;
-      modify->fmask[ifix] &= ~INITIAL_INTEGRATE;
-      force_reneighbor = 0;
-      next_reneighbor = -1;
-
-      // NOTE: this data exists for every motion instance ?
-
-      move_clear();
-      return 2;
-    }
-
-    // add a new motion operation
-
     modify->fmask[ifix] |= INITIAL_INTEGRATE;
-
-    if (nmotion == maxmotion) {
-      maxmotion++;
-      motions = (Motion *)
-        memory->srealloc(motions,maxmotion*sizeof(Motion),"fix_surface_global::motion");
-    }
-
-    int igroup = find_group(arg[1]);
-    if (igroup < 0) error->all(FLERR,"Fix surface/global move group does not exist");
-    motions[nmotion].igroup = igroup;
-
-    int argcount = modify_params_move(&motions[nmotion],narg-2,&arg[2]);
-    nmotion++;
 
     force_reneighbor = 1;
     next_reneighbor = -1;
 
-    return argcount + 2;
+    // intialize points and surfs in stypes
+
+    int itype,p1,p2,p3;
+    double omega;
+    double *runit;
+    int mstyle = motions[imotion].mstyle;
+    
+    for (int i = 0; i < nsurf; i++) {
+      if (dimension == 2) itype = lines[i].type;
+      else itype = tris[i].type;
+      if (!stypes[itype]) continue;
+      
+      if (dimension == 2) {
+	p1 = lines[i].p1;
+	p2 = lines[i].p2;
+	points_lastneigh[p1][0] = points_original[p1][0] = points[p1].x[0];
+	points_lastneigh[p1][1] = points_original[p1][1] = points[p1].x[1];
+	points_lastneigh[p1][2] = points_original[p1][2] = points[p1].x[2];
+	points_lastneigh[p2][0] = points_original[p2][0] = points[p2].x[0];
+	points_lastneigh[p2][1] = points_original[p2][1] = points[p2].x[1];
+	points_lastneigh[p2][2] = points_original[p2][2] = points[p2].x[2];
+      } else {
+	p1 = tris[i].p1;
+	p2 = tris[i].p2;
+	p3 = tris[i].p3;
+	points_lastneigh[p1][0] = points_original[p1][0] = points[p1].x[0];
+	points_lastneigh[p1][1] = points_original[p1][1] = points[p1].x[1];
+	points_lastneigh[p1][2] = points_original[p1][2] = points[p1].x[2];
+	points_lastneigh[p2][0] = points_original[p2][0] = points[p2].x[0];
+	points_lastneigh[p2][1] = points_original[p2][1] = points[p2].x[1];
+	points_lastneigh[p2][2] = points_original[p2][2] = points[p2].x[2];
+	points_lastneigh[p3][0] = points_original[p3][0] = points[p3].x[0];
+	points_lastneigh[p3][1] = points_original[p3][1] = points[p3].x[1];
+	points_lastneigh[p3][2] = points_original[p3][2] = points[p3].x[2];
+      }
+    
+      xsurf_original[i][0] = xsurf[i][0];
+      xsurf_original[i][1] = xsurf[i][1];
+      xsurf_original[i][2] = xsurf[i][2];
+      
+      if (mstyle == ROTATE || mstyle == TRANSROT) {
+	omega = motions[imotion].omega;
+	runit = motions[imotion].unit;
+	omegasurf[i][0] = omega*runit[0];
+	omegasurf[i][1] = omega*runit[1];
+	omegasurf[i][2] = omega*runit[2];
+      }
+    }
+
+    delete [] stypes;
+    return 2 + styleargs;
   }
 
+  // type/region keyword
+
+  if (strcmp(arg[0],"type/region") == 0) {
+    if (narg < 3) error->all(FLERR,"Illegal fix_modify command");
+
+    int stype = utils::inumeric(FLERR,arg[1],false,lmp);
+    if (stype <= 0 || stype > maxsurftype)
+      error->all(FLERR,"Invalid fix_modify type/region surf type");
+
+    auto region = domain->get_region_by_id(arg[2]);
+    if (!region) error->all(FLERR,"Fix_modify type/region region {} does not exist", arg[2]);
+    
+    if (dimension == 2) {
+      for (int i = 0; i < nlines; i++)
+	if (region->match(xsurf[i][0],xsurf[i][1],xsurf[i][2]))
+	  lines[i].type = stype;
+    } else {
+      for (int i = 0; i < ntris; i++)
+	if (region->match(xsurf[i][0],xsurf[i][1],xsurf[i][2]))
+	  tris[i].type = stype;
+    }
+
+    return 3;
+  }
+  
   // keyword not recognized
 
   return 0;
@@ -931,183 +1221,7 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
 
 /* ---------------------------------------------------------------------- */
 
-int FixSurfaceGlobal::modify_params_group(int igroup, int bit, int narg, char **arg)
-{
-  /*
-  if (strcmp(arg[0],"region") == 0) {
-    if (narg < 2) error->all(FLERR,"Illegal fix_modify command");
-
-    auto region = domain->get_region_by_id(arg[3]);
-    if (!region) error->all(FLERR,"Region {} for fix_modify group region does not exist", arg[3]);
-    region->init();
-    region->prematch();
-
-    // check center point for each line or tri
-
-    double xc,yc,zc;
-    double *x1,*x2,*x3;
-
-    if (dimension == 2) {
-      for (int i = 0; i < nsurf; i++) {
-        x1 = points[lines[i].p1].x;
-        x2 = points[lines[i].p2].x;
-        xc = 0.5 * (x1[0] + x2[0]);
-        yc = 0.5 * (x1[1] + x2[1]);
-        if (region->match(xc,yc,0.0))
-          gmask[i] |= bit;
-      }
-    } else {
-      double onethird = 1.0/3.0;
-      for (int i = 0; i < nsurf; i++) {
-        x1 = points[tris[i].p1].x;
-        x2 = points[tris[i].p2].x;
-        x3 = points[tris[i].p3].x;
-        xc = onethird * (x1[0] + x2[0] + x3[0]);
-        yc = onethird * (x1[1] + x2[1] + x3[1]);
-        zc = onethird * (x1[2] + x2[2] + x3[2]);
-        if (region->match(xc,yc,zc))
-          gmask[i] |= bit;
-      }
-    }
-
-    return 2;
-
-    if (strcmp(arg[0],"type") == 0 ||
-        strcmp(arg[0],"id") == 0 ||
-        strcmp(arg[0],"molecule") == 0) {
-
-      int category;
-      if (strcmp(arg[1],"type") == 0) category = TYPE;
-      else if (strcmp(arg[1],"molecule") == 0) category = MOLECULE;
-      else if (strcmp(arg[1],"id") == 0) category = ID;
-
-      // args = logical condition
-
-      if (narg > 3 &&
-          (strcmp(arg[2],"<") == 0 || strcmp(arg[2],">") == 0 ||
-           strcmp(arg[2],"<=") == 0 || strcmp(arg[2],">=") == 0 ||
-           strcmp(arg[2],"==") == 0 || strcmp(arg[2],"!=") == 0 ||
-           strcmp(arg[2],"<>") == 0)) {
-
-        int condition = -1;
-        if (strcmp(arg[2],"<") == 0) condition = LT;
-        else if (strcmp(arg[2],"<=") == 0) condition = LE;
-        else if (strcmp(arg[2],">") == 0) condition = GT;
-        else if (strcmp(arg[2],">=") == 0) condition = GE;
-        else if (strcmp(arg[2],"==") == 0) condition = EQ;
-        else if (strcmp(arg[2],"!=") == 0) condition = NEQ;
-        else if (strcmp(arg[2],"<>") == 0) condition = BETWEEN;
-        else error->all(FLERR,"Illegal fix surface/global group command");
-
-        int bound1,bound2;
-        bound1 = utils::inumeric(FLERR, arg[3], false, lmp);
-        bound2 = -1;
-
-        if (condition == BETWEEN) {
-          if (narg < 4) error->all(FLERR,"Illegal group command");
-          bound2 = utils::inumeric(FLERR, arg[3], false, lmp);
-        }
-
-        // add to group if meets condition
-
-        int attribute;
-
-        for (int i = 0; i < nsurf; i++) {
-          attribute = i+1;
-          if (dimension == 2) {
-            if (category == TYPE) attribute = lines[i].type;
-            else if (category == MOLECULE) attribute = lines[i].mol;
-          } else {
-            if (category == TYPE) attribute = tris[i].type;
-            else if (category == MOLECULE) attribute = tris[i].mol;
-          }
-
-          if (condition == LT) {
-            if (attribute < bound1) gmask[i] |= bit;
-          } else if (condition == LE) {
-            if (attribute <= bound1) gmask[i] |= bit;
-          } else if (condition == GT) {
-            if (attribute > bound1) gmask[i] |= bit;
-          } else if (condition == GE) {
-            if (attribute >= bound1) gmask[i] |= bit;
-          } else if (condition == EQ) {
-            if (attribute == bound1) gmask[i] |= bit;
-          } else if (condition == NEQ) {
-            if (attribute != bound1) gmask[i] |= bit;
-          } else if (condition == BETWEEN) {
-            if (attribute >= bound1 && attribute <= bound2)
-              gmask[i] |= bit;
-          }
-        }
-
-        return 4;
-      }
-
-      // args = list of values
-      // NOTE: how to stop at end of args - check if non-numeric
-      // NOTE: how to parse colon syntax
-
-      char *typestr = nullptr;
-      tagint start,stop,delta;
-
-      iarg = 2;
-      while (isnumeric{arg[iarg[2][0]) {
-        delta = 1;
-        stop = start = utils::inumeric(FLERR, typestr, false, lmp);
-        if (typestr == nullptr) {
-          try {
-            ValueTokenizer values(arg[iarg],":");
-            start = values.next_tagint();
-            if (utils::strmatch(arg[iarg],"^-?\\d+$")) {
-              stop = start;
-            } else if (utils::strmatch(arg[iarg],"^-?\\d+:-?\\d+$")) {
-              stop = values.next_tagint();
-            } else if (utils::strmatch(arg[iarg],"^-?\\d+:-?\\d+:\\d+$")) {
-              stop = values.next_tagint();
-              delta = values.next_tagint();
-            } else throw TokenizerException("Syntax error","");
-          } catch (TokenizerException &e) {
-            error->all(FLERR,"Incorrect range string '{}': {}",arg[iarg],e.what());
-          }
-          if (delta < 1)
-            error->all(FLERR,"Illegal range increment value");
-        }
-
-        // add to group if attribute matches value or sequence
-
-        int attribute;
-
-        for (int i = 0; i < nsurf; i++) {
-          attribute = i+1;
-          if (dimension == 2) {
-            if (category == TYPE) attribute = lines[i].type;
-            else if (category == MOLECULE) attribute = lines[i].mol;
-          } else {
-            if (category == TYPE) attribute = tris[i].type;
-            else if (category == MOLECULE) attribute = tris[i].mol;
-          }
-
-          if (attribute >= start && attribute <= stop &&
-              (attribute-start) % delta == 0) gmask[i] |= bit;
-        }
-
-        delete [] typestr;
-      }
-
-        return 4;
-    }
-
-    // return error
-  }
-
-  */
-
-  return 0;
-}
-
-/* ---------------------------------------------------------------------- */
-
-int FixSurfaceGlobal::modify_params_move(Motion *motion, int narg, char **arg)
+int FixSurfaceGlobal::modify_param_move(Motion *motion, int narg, char **arg)
 {
   if (strcmp(arg[0],"linear") == 0) {
     if (narg < 4) error->all(FLERR,"Illegal fix_modify move command");
@@ -1154,6 +1268,7 @@ int FixSurfaceGlobal::modify_params_move(Motion *motion, int narg, char **arg)
 
     motion->period = utils::numeric(FLERR, arg[7], false, lmp);
     if (motion->period <= 0.0) error->all(FLERR, "Illegal fix_modify move command");
+    motion->omega = MY_2PI / motion->period;
 
     return 5;
   }
@@ -1187,11 +1302,6 @@ int FixSurfaceGlobal::modify_params_move(Motion *motion, int narg, char **arg)
       error->all(FLERR,"Fix_modify move zero length rotation vector");
     MathExtra::normalize3(motion->axis,motion->unit);
 
-    // NOTE: how do these 2 operations now work
-
-    move_clear();
-    move_init();
-
     return 8;
   }
 
@@ -1199,6 +1309,9 @@ int FixSurfaceGlobal::modify_params_move(Motion *motion, int narg, char **arg)
     if (narg < 11) error->all(FLERR,"Illegal fix_modify move command");
     motion->mstyle = TRANSROT;
 
+    error->all(FLERR,
+	       "Fix_modify move transrot not yet supported for fix surface/global");
+    
     motion->vxflag = motion->vyflag = motion->vzflag = 1;
     motion->vx = utils::numeric(FLERR, arg[1], false, lmp);
     motion->vy = utils::numeric(FLERR, arg[2], false, lmp);
@@ -1229,44 +1342,21 @@ int FixSurfaceGlobal::modify_params_move(Motion *motion, int narg, char **arg)
       error->all(FLERR,"Fix_modify move zero length rotation vector");
     MathExtra::normalize3(motion->axis,motion->unit);
 
-    // NOTE: how do these 2 operations now work
-
-    move_clear();
-    move_init();
-
     return 11;
   }
 
   if (strcmp(arg[0],"variable") == 0) {
+    if (narg < 7) error->all(FLERR,"Illegal fix_modify move command");
+    motion->mstyle = TRANSROT;
+
+    error->all(FLERR,
+	       "Fix_modify move variable not yet supported for fix surface/global");
+    return 7;
   }
+  
+  error->all(FLERR,"Fix_modify move style not recognized");
 
-  //error return;
-
-  //return iarg;
   return 0;
-}
-
-/* ---------------------------------------------------------------------- */
-
-int FixSurfaceGlobal::find_group(const char *name)
-{
-  for (int igroup = 0; igroup < ngroup; igroup++)
-    if (strcmp(gnames[igroup],name) == 0) return igroup;
-  return -1;
-}
-
-/* ---------------------------------------------------------------------- */
-
-int FixSurfaceGlobal::add_group(const char *name)
-{
-  if (ngroup == MAX_GROUP) error->all(FLERR,"Fix surface/global too many groups");
-
-  int n = strlen(name) + 1;
-  gnames[ngroup] = new char[n];
-  strcpy(gnames[ngroup],name);
-  ngroup++;
-
-  return ngroup-1;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1286,8 +1376,6 @@ void FixSurfaceGlobal::reset_dt()
 
 double FixSurfaceGlobal::memory_usage()
 {
-  // NOTE: need to include neigh lists
-
   double bytes = 0.0;
   bytes += npoints*sizeof(Point);
   if (dimension == 2) {
@@ -1382,19 +1470,13 @@ int FixSurfaceGlobal::image(int *&ivec, double **&darray)
 // ----------------------------------------------------------------------
 
 /* ----------------------------------------------------------------------
-   extract lines or surfs from molecule template ID for one or more molecules
-   concatenate into single list of lines and tris
+   extract lines or tris from a molecule template ID for one or more molecules
+   concatenate into single list of points and lines or tris
    identify unique points using hash
-   this creates points and lines or tris data structs (2d or 3d)
 ------------------------------------------------------------------------- */
 
-void FixSurfaceGlobal::extract_from_molecules(char *molID)
+void FixSurfaceGlobal::extract_from_molecule(char *molID)
 {
-  // populate global point/line/tri data structs
-
-  npoints = nlines = ntris = 0;
-  int maxpoints = 0;
-
   int imol = atom->find_molecule(molID);
   if (imol == -1)
     error->all(FLERR,"Molecule template ID for fix surface/global does not exist");
@@ -1422,12 +1504,6 @@ void FixSurfaceGlobal::extract_from_molecules(char *molID)
     tris = (Tri *) memory->srealloc(tris,ntris*sizeof(Tri),
                                     "surface/global:tris");
 
-    // create a map
-    // key = xyz coords of a point
-    // value = index into unique points vector
-
-    std::map<std::tuple<double,double,double>,int> hash;
-
     // offset line/tri index lists by previous npoints
     // pi,p2,p3 are C-style indices into points vector
 
@@ -1442,34 +1518,34 @@ void FixSurfaceGlobal::extract_from_molecules(char *molID)
         lines[iline].type = typeline[i];
 
         auto key = std::make_tuple(epts[i][0],epts[i][1],0.0);
-        if (hash.find(key) == hash.end()) {
+        if (hash->find(key) == hash->end()) {
           if (npoints == maxpoints) {
             maxpoints += DELTA;
             points = (Point *) memory->srealloc(points,maxpoints*sizeof(Point),
                                                 "surface/global:points");
           }
-          hash[key] = npoints;
+          (*hash)[key] = npoints;
           points[npoints].x[0] = epts[i][0];
           points[npoints].x[1] = epts[i][1];
           points[npoints].x[2] = 0.0;
           lines[iline].p1 = npoints;
           npoints++;
-        } else lines[iline].p1 = hash[key];
+        } else lines[iline].p1 = (*hash)[key];
 
         key = std::make_tuple(epts[i][2],epts[i][3],0.0);
-        if (hash.find(key) == hash.end()) {
+        if (hash->find(key) == hash->end()) {
           if (npoints == maxpoints) {
             maxpoints += DELTA;
             points = (Point *) memory->srealloc(points,maxpoints*sizeof(Point),
                                                 "surface/global:points");
           }
-          hash[key] = npoints;
+          (*hash)[key] = npoints;
           points[npoints].x[0] = epts[i][2];
           points[npoints].x[1] = epts[i][3];
           points[npoints].x[2] = 0.0;
           lines[iline].p2 = npoints;
           npoints++;
-        } else lines[iline].p2 = hash[key];
+        } else lines[iline].p2 = (*hash)[key];
 
         iline++;
       }
@@ -1486,49 +1562,49 @@ void FixSurfaceGlobal::extract_from_molecules(char *molID)
         tris[itri].type = typetri[i];
 
         auto key = std::make_tuple(cpts[i][0],cpts[i][1],cpts[i][2]);
-        if (hash.find(key) == hash.end()) {
+        if (hash->find(key) == hash->end()) {
           if (npoints == maxpoints) {
             maxpoints += DELTA;
             points = (Point *) memory->srealloc(points,maxpoints*sizeof(Point),
                                                 "surface/global:points");
           }
-          hash[key] = npoints;
+          (*hash)[key] = npoints;
           points[npoints].x[0] = cpts[i][0];
           points[npoints].x[1] = cpts[i][1];
           points[npoints].x[2] = cpts[i][2];
           tris[itri].p1 = npoints;
           npoints++;
-        } else tris[itri].p1 = hash[key];
+        } else tris[itri].p1 = (*hash)[key];
 
         key = std::make_tuple(cpts[i][3],cpts[i][4],cpts[i][5]);
-        if (hash.find(key) == hash.end()) {
+        if (hash->find(key) == hash->end()) {
           if (npoints == maxpoints) {
             maxpoints += DELTA;
             points = (Point *) memory->srealloc(points,maxpoints*sizeof(Point),
                                                 "surface/global:points");
           }
-          hash[key] = npoints;
+          (*hash)[key] = npoints;
           points[npoints].x[0] = cpts[i][3];
           points[npoints].x[1] = cpts[i][4];
           points[npoints].x[2] = cpts[i][5];
           tris[itri].p2 = npoints;
           npoints++;
-        } else tris[itri].p2 = hash[key];
+        } else tris[itri].p2 = (*hash)[key];
 
         key = std::make_tuple(cpts[i][6],cpts[i][7],cpts[i][8]);
-        if (hash.find(key) == hash.end()) {
+        if (hash->find(key) == hash->end()) {
           if (npoints == maxpoints) {
             maxpoints += DELTA;
             points = (Point *) memory->srealloc(points,maxpoints*sizeof(Point),
                                                 "surface/global:points");
           }
-          hash[key] = npoints;
+          (*hash)[key] = npoints;
           points[npoints].x[0] = cpts[i][6];
           points[npoints].x[1] = cpts[i][7];
           points[npoints].x[2] = cpts[i][8];
           tris[itri].p3 = npoints;
           npoints++;
-        } else tris[itri].p3 = hash[key];
+        } else tris[itri].p3 = (*hash)[key];
 
         itri++;
       }
@@ -1538,8 +1614,8 @@ void FixSurfaceGlobal::extract_from_molecules(char *molID)
 
 /* ----------------------------------------------------------------------
    extract triangles from an STL file, can be text or binary
+   concatenate into single list of points and tris
    identify unique points using hash
-   this creates points and tris data structs (3d only)
 ------------------------------------------------------------------------- */
 
 void FixSurfaceGlobal::extract_from_stlfile(char *filename)
@@ -1554,19 +1630,6 @@ void FixSurfaceGlobal::extract_from_stlfile(char *filename)
   double **stltris;
   ntris = stl->read_file(filename,stltris);
 
-  // create points and tris data structs
-
-  npoints = 0;
-  int maxpoints = 0;
-
-  tris = (Tri *) memory->smalloc(ntris*sizeof(Tri),"surface/global:tris");
-
-  // create a map
-  // key = xyz coords of a point
-  // value = index into unique points vector
-
-  std::map<std::tuple<double,double,double>,int> hash;
-
   // loop over STL tris
   // populate points and tris data structs
   // set molecule and type of tri = 1
@@ -1576,49 +1639,49 @@ void FixSurfaceGlobal::extract_from_stlfile(char *filename)
     tris[itri].type = 1;
 
     auto key = std::make_tuple(stltris[itri][0],stltris[itri][1],stltris[itri][2]);
-    if (hash.find(key) == hash.end()) {
+    if (hash->find(key) == hash->end()) {
       if (npoints == maxpoints) {
         maxpoints += DELTA;
         points = (Point *) memory->srealloc(points,maxpoints*sizeof(Point),
                                             "surface/global:points");
       }
-      hash[key] = npoints;
+      (*hash)[key] = npoints;
       points[npoints].x[0] = stltris[itri][0];
       points[npoints].x[1] = stltris[itri][1];
       points[npoints].x[2] = stltris[itri][2];
       tris[itri].p1 = npoints;
       npoints++;
-    } else tris[itri].p1 = hash[key];
+    } else tris[itri].p1 = (*hash)[key];
 
     key = std::make_tuple(stltris[itri][3],stltris[itri][4],stltris[itri][5]);
-    if (hash.find(key) == hash.end()) {
+    if (hash->find(key) == hash->end()) {
       if (npoints == maxpoints) {
         maxpoints += DELTA;
         points = (Point *) memory->srealloc(points,maxpoints*sizeof(Point),
                                             "surface/global:points");
       }
-      hash[key] = npoints;
+      (*hash)[key] = npoints;
       points[npoints].x[0] = stltris[itri][3];
       points[npoints].x[1] = stltris[itri][4];
       points[npoints].x[2] = stltris[itri][5];
       tris[itri].p2 = npoints;
       npoints++;
-    } else tris[itri].p2 = hash[key];
+    } else tris[itri].p2 = (*hash)[key];
 
     key = std::make_tuple(stltris[itri][6],stltris[itri][7],stltris[itri][8]);
-    if (hash.find(key) == hash.end()) {
+    if (hash->find(key) == hash->end()) {
       if (npoints == maxpoints) {
         maxpoints += DELTA;
         points = (Point *) memory->srealloc(points,maxpoints*sizeof(Point),
                                             "surface/global:points");
       }
-      hash[key] = npoints;
+      (*hash)[key] = npoints;
       points[npoints].x[0] = stltris[itri][6];
       points[npoints].x[1] = stltris[itri][7];
       points[npoints].x[2] = stltris[itri][8];
       tris[itri].p3 = npoints;
       npoints++;
-    } else tris[itri].p3 = hash[key];
+    } else tris[itri].p3 = (*hash)[key];
   }
 
   // delete STL reader
@@ -1637,12 +1700,12 @@ void FixSurfaceGlobal::connectivity2d_global()
     memory->smalloc(nlines*sizeof(Connect2d),
                     "surface/global:connect2d");
 
-  // setup end point connectivity lists
+  // setup line end point connectivity lists
   // count # of lines containing each end point (including self)
   // plines = ragged 2d array with indices of lines which contain each point
 
   int *counts;
-  memory->create(counts,npoints,"surface/global:count");
+  memory->create(counts,npoints,"surface/global:counts");
 
   for (int i = 0; i < npoints; i++) counts[i] = 0;
 
@@ -1662,8 +1725,8 @@ void FixSurfaceGlobal::connectivity2d_global()
 
   // allocate all ragged arrays which Connect2d will point to
   // first subtract self from each point's count
-  //   b/c connect2d vectors will NOT include self
-  
+  //   b/c connect3d vectors will NOT include self
+
   for (int i = 0; i < npoints; i++) counts[i]--;
 
   memory->create_ragged(neigh_p1,npoints,counts,"surface/global:neigh_p1");
@@ -1674,7 +1737,7 @@ void FixSurfaceGlobal::connectivity2d_global()
   memory->create_ragged(nside_p2,npoints,counts,"surface/global:nside_p2");
   memory->create_ragged(aflag_p1,npoints,counts,"surface/global:aflag_p1");
   memory->create_ragged(aflag_p2,npoints,counts,"surface/global:aflag_p2");
-  
+
   // set connect2d vector ptrs to rows of corresponding ragged arrays
 
   for (int i = 0; i < nlines; i++) {
@@ -1705,11 +1768,11 @@ void FixSurfaceGlobal::connectivity2d_global()
     }
   }
 
-  // set connect2d neigh for each end point of each line
+  // initialize connect2d neigh vectors for each end point of each line
   // do NOT include self
 
   int j,m;
-  
+
   for (int i = 0; i < nlines; i++) {
     if (connect2d[i].np1) {
       j = 0;
@@ -1728,15 +1791,21 @@ void FixSurfaceGlobal::connectivity2d_global()
       }
     }
   }
+  
+  // deallocate counts and plines
+  
+  memory->destroy(counts);
+  memory->destroy(plines);
 
   // set connect2d pwhich/nside/aflag for each end point of each line
   // see fsg.h file for an explanation of each vector in Connect2d
   // aflag is based on dot and cross product of 2 connected line normals
-  
+  //   cross product is either along +z or -z direction
+
   double dotline,dotnorm;
   double *inorm,*jnorm;
   double icrossj[3];
-  
+
   for (int i = 0; i < nlines; i++) {
     for (m = 0; m < connect2d[i].np1; m++) {
       j = connect2d[i].neigh_p1[m];
@@ -1744,11 +1813,11 @@ void FixSurfaceGlobal::connectivity2d_global()
       inorm = lines[i].norm;
       jnorm = lines[j].norm;
       dotnorm = MathExtra::dot3(inorm,jnorm);
-      
+
       if (lines[i].p1 == lines[j].p1) {
         connect2d[i].pwhich_p1[j] = 0;
         connect2d[i].nside_p1[j] = OPPOSITE_SIDE;
-        if (dotnorm < -1.0+FLATTHRESH) connect2d[i].aflag_p1[j] = FLAT;
+        if (dotnorm < -1.0+flatthresh) connect2d[i].aflag_p1[j] = FLAT;
         else {
           MathExtra::cross3(inorm,jnorm,icrossj);
           if (icrossj[2] > 0.0) connect2d[i].aflag_p1[j] = CONCAVE;
@@ -1757,7 +1826,7 @@ void FixSurfaceGlobal::connectivity2d_global()
       } else if (lines[i].p1 == lines[j].p2) {
         connect2d[i].pwhich_p1[j] = 1;
         connect2d[i].nside_p1[j] = SAME_SIDE;
-        if (dotnorm > 1.0-FLATTHRESH) connect2d[i].aflag_p1[j] = FLAT;
+        if (dotnorm > 1.0-flatthresh) connect2d[i].aflag_p1[j] = FLAT;
         else {
           MathExtra::cross3(inorm,jnorm,icrossj);
           if (icrossj[2] < 0.0) connect2d[i].aflag_p1[j] = CONCAVE;
@@ -1772,11 +1841,11 @@ void FixSurfaceGlobal::connectivity2d_global()
       inorm = lines[i].norm;
       jnorm = lines[j].norm;
       dotnorm = MathExtra::dot3(inorm,jnorm);
-      
+
       if (lines[i].p2 == lines[j].p1) {
         connect2d[i].pwhich_p2[j] = 0;
         connect2d[i].nside_p2[j] = SAME_SIDE;
-        if (dotnorm > 1.0-FLATTHRESH) connect2d[i].aflag_p2[j] = FLAT;
+        if (dotnorm > 1.0-flatthresh) connect2d[i].aflag_p2[j] = FLAT;
         else {
           MathExtra::cross3(inorm,jnorm,icrossj);
           if (icrossj[2] > 0.0) connect2d[i].aflag_p2[j] = CONCAVE;
@@ -1785,7 +1854,7 @@ void FixSurfaceGlobal::connectivity2d_global()
       } else if (lines[i].p2 == lines[j].p2) {
         connect2d[i].pwhich_p2[j] = 1;
         connect2d[i].nside_p2[j] = OPPOSITE_SIDE;
-        if (dotnorm < -1.0+FLATTHRESH) connect2d[i].aflag_p2[j] = FLAT;
+        if (dotnorm < -1.0+flatthresh) connect2d[i].aflag_p2[j] = FLAT;
         else {
           MathExtra::cross3(inorm,jnorm,icrossj);
           if (icrossj[2] < 0.0) connect2d[i].aflag_p2[j] = CONCAVE;
@@ -1794,20 +1863,11 @@ void FixSurfaceGlobal::connectivity2d_global()
       }
     }
   }
-
-  // NOTE: set flatthresh based on angle (degrees) set by user
-  // NOTE: need to order connections with FLAT first?
-  // NOTE: error checks for zero-length lines, duplicate lines
-  // NOTE: warn for too-small lines
-  // NOTE: alter connection info if 2 lines are different types ?
-  
-  memory->destroy(counts);
-  memory->destroy(plines);
 }
 
 /* ----------------------------------------------------------------------
    create and initialize Connect3d info for all triangles
-   this creates elist/clist and connect3d data structs
+   this creates etris/ctris and connect3d data structs
 ------------------------------------------------------------------------- */
 
 void FixSurfaceGlobal::connectivity3d_global()
@@ -1817,12 +1877,15 @@ void FixSurfaceGlobal::connectivity3d_global()
   connect3d = (Connect3d *)
     memory->smalloc(ntris*sizeof(Connect3d),
                     "surface/global:connect3d");
+
+  // create hash = map of unique edges
+  //   key = <p1,p2> indices of 2 points, in either order
+  //   value = index of the unique edge (0 to Nedge-1)
+  // tri2edges[i][j] = index of unique edge for tri I and edge J
+  // nedges = total count of unique edges
+
   int **tri2edge;
   memory->create(tri2edge,ntris,3,"surfface/global::tri2edge");
-
-  // create a map
-  // key = <p1,p2> indices of 2 points, in either order
-  // value = index into count of unique edges
 
   std::map<std::tuple<int,int>,int> hash;
   int nedges = 0;
@@ -1867,10 +1930,8 @@ void FixSurfaceGlobal::connectivity3d_global()
   }
 
   // setup tri edge connectivity lists
-  // count # of tris containing each edge
-  // create ragged 2d array to contain all edge indices, then fill it
-  // set neigh_e123 vector ptrs in connect3d to rows of ragged array
-  // ne123 counts and vectors include self tri
+  // count # of tris containing each edge (including self)
+  // etris = ragged 2d array with indices of tris which contain each edge
 
   int *counts;
   memory->create(counts,nedges,"surface/global:count");
@@ -1882,41 +1943,269 @@ void FixSurfaceGlobal::connectivity3d_global()
     counts[tri2edge[i][1]]++;
     counts[tri2edge[i][2]]++;
   }
-
-  memory->create_ragged(elist,nedges,counts,"surface/global:elist");
+  
+  memory->create_ragged(etris,nedges,counts,"surface/global:etris");
 
   for (int i = 0; i < nedges; i++) counts[i] = 0;
 
   for (int i = 0; i < ntris; i++) {
-    elist[tri2edge[i][0]][counts[tri2edge[i][0]]++] = i;
-    elist[tri2edge[i][1]][counts[tri2edge[i][1]]++] = i;
-    elist[tri2edge[i][2]][counts[tri2edge[i][2]]++] = i;
+    etris[tri2edge[i][0]][counts[tri2edge[i][0]]++] = i;
+    etris[tri2edge[i][1]][counts[tri2edge[i][1]]++] = i;
+    etris[tri2edge[i][2]][counts[tri2edge[i][2]]++] = i;
   }
 
+  // allocate all edge ragged arrays which Connect3d will point to
+  // first subtract self from each edge's count
+  //   b/c connect3d vectors will NOT include self
+
+  for (int i = 0; i < nedges; i++) counts[i]--;
+
+  memory->create_ragged(neigh_e1,nedges,counts,"surface/global:neigh_e1");
+  memory->create_ragged(neigh_e2,nedges,counts,"surface/global:neigh_e2");
+  memory->create_ragged(neigh_e3,nedges,counts,"surface/global:neigh_e3");
+  memory->create_ragged(ewhich_e1,nedges,counts,"surface/global:ewhich_e1");
+  memory->create_ragged(ewhich_e2,nedges,counts,"surface/global:ewhich_e2");
+  memory->create_ragged(ewhich_e3,nedges,counts,"surface/global:ewhich_e3");
+  memory->create_ragged(nside_e1,nedges,counts,"surface/global:nside_e1");
+  memory->create_ragged(nside_e2,nedges,counts,"surface/global:nside_e2");
+  memory->create_ragged(nside_e3,nedges,counts,"surface/global:nside_e3");
+  memory->create_ragged(aflag_e1,nedges,counts,"surface/global:aflag_e1");
+  memory->create_ragged(aflag_e2,nedges,counts,"surface/global:aflag_e2");
+  memory->create_ragged(aflag_e3,nedges,counts,"surface/global:aflag_e3");
+
+  // set connect3d edge vector ptrs to rows of corresponding ragged arrays
+  
   for (int i = 0; i < ntris; i++) {
     connect3d[i].ne1 = counts[tri2edge[i][0]];
-    if (connect3d[i].ne1 == 1) connect3d[i].neigh_e1 = nullptr;
-    else connect3d[i].neigh_e1 = elist[tri2edge[i][0]];
+    if (connect3d[i].ne1 == 0) {
+      connect3d[i].neigh_e1 = nullptr;
+      connect3d[i].ewhich_e1 = nullptr;
+      connect3d[i].nside_e1 = nullptr;
+      connect3d[i].aflag_e1 = nullptr;
+    } else {
+      connect3d[i].neigh_e1 = neigh_e1[tri2edge[i][0]];
+      connect3d[i].ewhich_e1 = ewhich_e1[tri2edge[i][0]];
+      connect3d[i].nside_e1 = nside_e1[tri2edge[i][0]];
+      connect3d[i].aflag_e1 = aflag_e1[tri2edge[i][0]];
+    }
 
     connect3d[i].ne2 = counts[tri2edge[i][1]];
-    if (connect3d[i].ne2 == 1) connect3d[i].neigh_e2 = nullptr;
-    else connect3d[i].neigh_e2 = elist[tri2edge[i][1]];
+    if (connect3d[i].ne2 == 0) {
+      connect3d[i].neigh_e2 = nullptr;
+      connect3d[i].ewhich_e2 = nullptr;
+      connect3d[i].nside_e2 = nullptr;
+      connect3d[i].aflag_e2 = nullptr;
+    } else {
+      connect3d[i].neigh_e2 = neigh_e2[tri2edge[i][1]];
+      connect3d[i].ewhich_e2 = ewhich_e2[tri2edge[i][1]];
+      connect3d[i].nside_e2 = nside_e2[tri2edge[i][1]];
+      connect3d[i].aflag_e2 = aflag_e2[tri2edge[i][1]];
+    }
 
     connect3d[i].ne3 = counts[tri2edge[i][2]];
-    if (connect3d[i].ne3 == 1) connect3d[i].neigh_e3 = nullptr;
-    else connect3d[i].neigh_e3 = elist[tri2edge[i][2]];
+    if (connect3d[i].ne3 == 0) {
+      connect3d[i].neigh_e3 = nullptr;
+      connect3d[i].ewhich_e3 = nullptr;
+      connect3d[i].nside_e3 = nullptr;
+      connect3d[i].aflag_e3 = nullptr;
+    } else {
+      connect3d[i].neigh_e3 = neigh_e3[tri2edge[i][2]];
+      connect3d[i].ewhich_e3 = ewhich_e3[tri2edge[i][2]];
+      connect3d[i].nside_e3 = nside_e3[tri2edge[i][2]];
+      connect3d[i].aflag_e3 = aflag_e3[tri2edge[i][2]];
+    }
   }
 
+  // initialize connect3d edge neigh vectors for each edge of each tri
+  // do NOT include self
+
+  int j,m;
+
+  for (int i = 0; i < ntris; i++) {
+    if (connect3d[i].ne1) {
+      j = 0;
+      for (m = 0; m <= connect3d[i].ne1; m++) {
+        if (etris[tri2edge[i][0]][m] == i) continue;
+        connect3d[i].neigh_e1[j] = etris[tri2edge[i][0]][m];
+        j++;
+      }
+    }
+    if (connect3d[i].ne2) {
+      j = 0;
+      for (m = 0; m <= connect3d[i].ne2; m++) {
+        if (etris[tri2edge[i][1]][m] == i) continue;
+        connect3d[i].neigh_e2[j] = etris[tri2edge[i][1]][m];
+        j++;
+      }
+    }
+    if (connect3d[i].ne3) {
+      j = 0;
+      for (m = 0; m <= connect3d[i].ne3; m++) {
+        if (etris[tri2edge[i][2]][m] == i) continue;
+        connect3d[i].neigh_e3[j] = etris[tri2edge[i][2]][m];
+        j++;
+      }
+    }
+  }
+  
+  // deallocate counts, tri2edge, etris
+  
   memory->destroy(counts);
   memory->destroy(tri2edge);
+  memory->destroy(etris);
 
-  // setup corner point connectivity lists
-  // count # of tris containing each point
-  // create ragged 2d array to contain all tri indices, then fill it
-  // set neigh_c123 vector ptrs in connect3d to rows of ragged array
-  // nc123 counts and vectors include self tri
+  // set connect3d edge ewhich/nside/aflag for each edge of each tri
+  // see fsg.h file for an explanation of each edge vector in Connect3d
+  // aflag is based on dot and cross product of 2 connected tri normals
+  //   cross product is either along itri edge or in opposite dir
 
-  memory->create(counts,npoints,"surface/global:count");
+  int jpfirst,jpsecond;
+  double dotline,dotnorm;
+  double *inorm,*jnorm;
+  double icrossj[3],iedge[3];
+
+  for (int i = 0; i < ntris; i++) {
+    for (m = 0; m < connect3d[i].ne1; m++) {
+      j = connect3d[i].neigh_e1[m];
+
+      if (tris[i].p1 == tris[j].p1) jpfirst = 1;
+      else if (tris[i].p1 == tris[j].p2) jpfirst = 2;
+      else if (tris[i].p1 == tris[j].p3) jpfirst = 3;
+
+      if (tris[i].p2 == tris[j].p1) jpsecond = 1;
+      else if (tris[i].p2 == tris[j].p2) jpsecond = 2;
+      else if (tris[i].p2 == tris[j].p3) jpsecond = 3;
+
+      inorm = tris[i].norm;
+      jnorm = tris[j].norm;
+      dotnorm = MathExtra::dot3(inorm,jnorm);
+      MathExtra::sub3(points[tris[i].p2].x,points[tris[i].p1].x,iedge);
+      
+      if ((jpfirst == 1 && jpsecond == 2) ||
+	  (jpfirst == 2 && jpsecond == 3) ||
+	  (jpfirst == 3 && jpsecond == 1)) {
+	connect3d[i].ewhich_e1[j] = jpfirst - 1;
+	connect3d[i].nside_e1[j] = OPPOSITE_SIDE;
+	if (dotnorm < -1.0+flatthresh) connect3d[i].aflag_e1[j] = FLAT;
+	else {
+	  MathExtra::cross3(inorm,jnorm,icrossj);
+	  if (MathExtra::dot3(icrossj,iedge) > 0.0)
+	    connect3d[i].aflag_e1[j] = CONCAVE;
+	  else
+	    connect3d[i].aflag_e1[j] = CONVEX;
+	}
+      } else {
+	if (jpfirst == 2) connect3d[i].ewhich_e1[j] = 0;
+	else if (jpfirst == 3) connect3d[i].ewhich_e1[j] = 1;
+	else if (jpfirst == 1) connect3d[i].ewhich_e1[j] = 2;
+	connect3d[i].nside_e1[j] = SAME_SIDE;
+        if (dotnorm > 1.0-flatthresh) connect3d[i].aflag_e1[j] = FLAT;
+        else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+          if (MathExtra::dot3(icrossj,iedge) < 0.0)
+	    connect3d[i].aflag_e1[j] = CONCAVE;
+          else
+	    connect3d[i].aflag_e1[j] = CONVEX;
+        }
+      }
+    }
+
+    for (m = 0; m < connect3d[i].ne2; m++) {
+      j = connect3d[i].neigh_e2[m];
+
+      if (tris[i].p2 == tris[j].p1) jpfirst = 1;
+      else if (tris[i].p2 == tris[j].p2) jpfirst = 2;
+      else if (tris[i].p2 == tris[j].p3) jpfirst = 3;
+
+      if (tris[i].p3 == tris[j].p1) jpsecond = 1;
+      else if (tris[i].p3 == tris[j].p2) jpsecond = 2;
+      else if (tris[i].p3 == tris[j].p3) jpsecond = 3;
+
+      inorm = tris[i].norm;
+      jnorm = tris[j].norm;
+      dotnorm = MathExtra::dot3(inorm,jnorm);
+      MathExtra::sub3(points[tris[i].p3].x,points[tris[i].p2].x,iedge);
+
+      if ((jpfirst == 1 && jpsecond == 2) ||
+	  (jpfirst == 2 && jpsecond == 3) ||
+	  (jpfirst == 3 && jpsecond == 1)) {
+	connect3d[i].ewhich_e2[j] = jpfirst - 1;
+	connect3d[i].nside_e2[j] = OPPOSITE_SIDE;
+	if (dotnorm < -1.0+flatthresh) connect3d[i].aflag_e2[j] = FLAT;
+	else {
+	  MathExtra::cross3(inorm,jnorm,icrossj);
+	  if (MathExtra::dot3(icrossj,iedge) > 0.0)
+	    connect3d[i].aflag_e2[j] = CONCAVE;
+	  else
+	    connect3d[i].aflag_e2[j] = CONVEX;
+	}
+      } else {
+	if (jpfirst == 2) connect3d[i].ewhich_e2[j] = 0;
+	else if (jpfirst == 3) connect3d[i].ewhich_e2[j] = 1;
+	else if (jpfirst == 1) connect3d[i].ewhich_e2[j] = 2;
+	connect3d[i].nside_e2[j] = SAME_SIDE;
+        if (dotnorm > 1.0-flatthresh) connect3d[i].aflag_e2[j] = FLAT;
+        else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+          if (MathExtra::dot3(icrossj,iedge) < 0.0)
+	    connect3d[i].aflag_e2[j] = CONCAVE;
+          else
+	    connect3d[i].aflag_e2[j] = CONVEX;
+        }
+      }
+    }
+    
+    for (m = 0; m < connect3d[i].ne3; m++) {
+      j = connect3d[i].neigh_e3[m];
+
+      if (tris[i].p3 == tris[j].p1) jpfirst = 1;
+      else if (tris[i].p3 == tris[j].p2) jpfirst = 2;
+      else if (tris[i].p3 == tris[j].p3) jpfirst = 3;
+
+      if (tris[i].p1 == tris[j].p1) jpsecond = 1;
+      else if (tris[i].p1 == tris[j].p2) jpsecond = 2;
+      else if (tris[i].p1 == tris[j].p3) jpsecond = 3;
+
+      inorm = tris[i].norm;
+      jnorm = tris[j].norm;
+      dotnorm = MathExtra::dot3(inorm,jnorm);
+      MathExtra::sub3(points[tris[i].p1].x,points[tris[i].p3].x,iedge);
+
+      if ((jpfirst == 1 && jpsecond == 2) ||
+	  (jpfirst == 2 && jpsecond == 3) ||
+	  (jpfirst == 3 && jpsecond == 1)) {
+	connect3d[i].ewhich_e3[j] = jpfirst - 1;
+	connect3d[i].nside_e3[j] = OPPOSITE_SIDE;
+	if (dotnorm < -1.0+flatthresh) connect3d[i].aflag_e3[j] = FLAT;
+	else {
+	  MathExtra::cross3(inorm,jnorm,icrossj);
+	  if (MathExtra::dot3(icrossj,iedge) > 0.0)
+	    connect3d[i].aflag_e3[j] = CONCAVE;
+	  else
+	    connect3d[i].aflag_e3[j] = CONVEX;
+	}
+      } else {
+	if (jpfirst == 2) connect3d[i].ewhich_e3[j] = 0;
+	else if (jpfirst == 3) connect3d[i].ewhich_e3[j] = 1;
+	else if (jpfirst == 1) connect3d[i].ewhich_e3[j] = 2;
+	connect3d[i].nside_e3[j] = SAME_SIDE;
+        if (dotnorm > 1.0-flatthresh) connect3d[i].aflag_e3[j] = FLAT;
+        else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+	  if (MathExtra::dot3(icrossj,iedge) < 0.0)
+	    connect3d[i].aflag_e3[j] = CONCAVE;
+          else
+	    connect3d[i].aflag_e3[j] = CONVEX;
+        }
+      }
+    }
+  }
+      
+  // setup tri corner point connectivity lists
+  // count # of tris containing each corner point (including self)
+  // ctris =  ragged 2d array with indices of tris which contain each point
+
+  memory->create(counts,npoints,"surface/global:counts");
 
   for (int i = 0; i < npoints; i++) counts[i] = 0;
 
@@ -1926,31 +2215,117 @@ void FixSurfaceGlobal::connectivity3d_global()
     counts[tris[i].p3]++;
   }
 
-  memory->create_ragged(clist,npoints,counts,"surface/global:clist");
+  memory->create_ragged(ctris,npoints,counts,"surface/global:ctris");
 
   for (int i = 0; i < npoints; i++) counts[i] = 0;
 
   for (int i = 0; i < ntris; i++) {
-    clist[tris[i].p1][counts[tris[i].p1]++] = i;
-    clist[tris[i].p2][counts[tris[i].p2]++] = i;
-    clist[tris[i].p3][counts[tris[i].p3]++] = i;
+    ctris[tris[i].p1][counts[tris[i].p1]++] = i;
+    ctris[tris[i].p2][counts[tris[i].p2]++] = i;
+    ctris[tris[i].p3][counts[tris[i].p3]++] = i;
   }
+
+  // allocate all ragged corner arrays which Connect2d will point to
+  // first subtract self from each point's count
+  //   b/c connect2d vectors will NOT include self
+
+  memory->create_ragged(neigh_c1,npoints,counts,"surface/global:neigh_c1");
+  memory->create_ragged(neigh_c2,npoints,counts,"surface/global:neigh_c2");
+  memory->create_ragged(neigh_c3,npoints,counts,"surface/global:neigh_c3");
+  memory->create_ragged(cwhich_c1,npoints,counts,"surface/global:cwhich_c1");
+  memory->create_ragged(cwhich_c2,npoints,counts,"surface/global:cwhich_c2");
+  memory->create_ragged(cwhich_c3,npoints,counts,"surface/global:cwhich_c3");
+
+  // set connect3d corner vector ptrs to rows of corresponding ragged arrays
 
   for (int i = 0; i < ntris; i++) {
     connect3d[i].nc1 = counts[tris[i].p1];
-    if (connect3d[i].nc1 == 1) connect3d[i].neigh_c1 = nullptr;
-    else connect3d[i].neigh_c1 = clist[tris[i].p1];
+    if (connect3d[i].nc1 == 0) {
+      connect3d[i].neigh_c1 = nullptr;
+      connect3d[i].cwhich_c1 = nullptr;
+    } else {
+      connect3d[i].neigh_c1 = neigh_c1[tris[i].p1];
+      connect3d[i].cwhich_c1 = cwhich_c1[tris[i].p1];
+    }
 
     connect3d[i].nc2 = counts[tris[i].p2];
-    if (connect3d[i].nc2 == 1) connect3d[i].neigh_c2 = nullptr;
-    else connect3d[i].neigh_c2 = clist[tris[i].p2];
+    if (connect3d[i].nc2 == 0) {
+      connect3d[i].neigh_c2 = nullptr;
+      connect3d[i].cwhich_c2 = nullptr;
+    } else {
+      connect3d[i].neigh_c2 = neigh_c2[tris[i].p2];
+      connect3d[i].cwhich_c2 = cwhich_c2[tris[i].p2];
+    }
 
     connect3d[i].nc3 = counts[tris[i].p3];
-    if (connect3d[i].nc3 == 1) connect3d[i].neigh_c3 = nullptr;
-    else connect3d[i].neigh_c3 = clist[tris[i].p3];
+    if (connect3d[i].nc3 == 0) {
+      connect3d[i].neigh_c3 = nullptr;
+      connect3d[i].cwhich_c3 = nullptr;
+    } else {
+      connect3d[i].neigh_c3 = neigh_c3[tris[i].p3];
+      connect3d[i].cwhich_c3 = cwhich_c3[tris[i].p3];
+    }
   }
 
+  // initialize connect3d corner neigh vectors for each corner point of each tri
+  // do NOT include self
+
+  for (int i = 0; i < ntris; i++) {
+    if (connect3d[i].nc1) {
+      j = 0;
+      for (m = 0; m <= connect3d[i].nc1; m++) {
+        if (ctris[tris[i].p1][m] == i) continue;
+        connect3d[i].neigh_c1[j] = ctris[tris[i].p1][m];
+        j++;
+      }
+    }
+    if (connect3d[i].nc2) {
+      j = 0;
+      for (m = 0; m <= connect3d[i].nc2; m++) {
+        if (ctris[tris[i].p2][m] == i) continue;
+        connect3d[i].neigh_c2[j] = ctris[tris[i].p2][m];
+        j++;
+      }
+    }
+    if (connect3d[i].nc3) {
+      j = 0;
+      for (m = 0; m <= connect3d[i].nc3; m++) {
+        if (ctris[tris[i].p3][m] == i) continue;
+        connect3d[i].neigh_c3[j] = ctris[tris[i].p3][m];
+        j++;
+      }
+    }
+  }
+
+  // deallocate counts and ctris
+  
   memory->destroy(counts);
+  memory->destroy(ctris);
+
+  // set connect3d cwhich for each end point of each line
+  // see fsg.h file for an explanation of each corner vector in Connect3d
+  // aflag is based on dot and cross product of 2 connected line normals
+
+  for (int i = 0; i < ntris; i++) {
+    for (m = 0; m < connect3d[i].nc1; m++) {
+      j = connect3d[i].neigh_c1[m];
+      if (tris[i].p1 == tris[j].p1) connect3d[i].cwhich_c1[j] = 0;
+      else if (tris[i].p1 == tris[j].p2) connect3d[i].cwhich_c1[j] = 1;
+      else if (tris[i].p1 == tris[j].p3) connect3d[i].cwhich_c1[j] = 2;
+    }
+    for (m = 0; m < connect3d[i].nc2; m++) {
+      j = connect3d[i].neigh_c2[m];
+      if (tris[i].p2 == tris[j].p1) connect3d[i].cwhich_c2[j] = 0;
+      else if (tris[i].p2 == tris[j].p2) connect3d[i].cwhich_c2[j] = 1;
+      else if (tris[i].p2 == tris[j].p3) connect3d[i].cwhich_c2[j] = 2;
+    }
+    for (m = 0; m < connect3d[i].nc3; m++) {
+      j = connect3d[i].neigh_c3[m];
+      if (tris[i].p3 == tris[j].p1) connect3d[i].cwhich_c3[j] = 0;
+      else if (tris[i].p3 == tris[j].p2) connect3d[i].cwhich_c3[j] = 1;
+      else if (tris[i].p3 == tris[j].p3) connect3d[i].cwhich_c3[j] = 2;
+    }
+  }
 }
 
 /* ----------------------------------------------------------------------
@@ -1963,7 +2338,7 @@ void FixSurfaceGlobal::surface_attributes()
   double delta[3],p12[3],p13[3];
   double *p1,*p2,*p3;
   double zunit[3] = {0.0,0.0,1.0};
-    
+
   memory->create(xsurf,nsurf,3,"surface/global:xsurf");
   memory->create(vsurf,nsurf,3,"surface/global:vsurf");
   memory->create(omegasurf,nsurf,3,"surface/global:omegasurf");
@@ -1985,7 +2360,7 @@ void FixSurfaceGlobal::surface_attributes()
     }
 
   } else {
-    
+
     for (int i = 0; i < nsurf; i++) {
       p1 = points[tris[i].p1].x;
       p2 = points[tris[i].p2].x;
@@ -2015,55 +2390,317 @@ void FixSurfaceGlobal::surface_attributes()
   }
 }
 
-/* ----------------------------------------------------------------------
-   setup for surface motion
+/* -------------------------------------------------------------------------
+   X = X0 + V*dt
 ------------------------------------------------------------------------- */
 
-void FixSurfaceGlobal::move_init()
+void FixSurfaceGlobal::move_linear(int imotion, int i)
 {
-  /*
-  memory->create(points_lastneigh,npoints,3,"surface/global:points_lastneigh");
-  memory->create(points_original,npoints,3,"surface/global:points_original");
-  memory->create(xsurf_original,nsurf,3,"surface/global:xsurf_original");
+  Motion *motion = &motions[imotion];
+  double time_origin = motion->time_origin;
+  double delta = (update->ntimestep - time_origin) * dt;
 
-  for (int i = 0; i < npoints; i++) {
-    points_lastneigh[i][0] = points_original[i][0] = points[i].x[0];
-    points_lastneigh[i][1] = points_original[i][1] = points[i].x[1];
-    points_lastneigh[i][2] = points_original[i][2] = points[i].x[2];
+  int vxflag = motion->vxflag;
+  int vyflag = motion->vyflag;
+  int vzflag = motion->vzflag;
+  double vx = motion->vx;
+  double vy = motion->vy;
+  double vz = motion->vz;
+  
+  // points - use of pointmove only moves a point once
+
+  int pindex;
+  double *pt;
+  
+  if (dimension == 2) {
+    pindex = lines[i].p1;
+    if (!pointmove[pindex]) {
+      pt = points[pindex].x;
+      if (vxflag) pt[0] = points_original[i][0] + vx * delta;
+      if (vyflag) pt[1] = points_original[i][1] + vy * delta;
+      pointmove[pindex] = 1;
+    }
+    pindex = lines[i].p2;
+    if (!pointmove[pindex]) {
+      pt = points[pindex].x;
+      if (vxflag) pt[0] = points_original[i][0] + vx * delta;
+      if (vyflag) pt[1] = points_original[i][1] + vy * delta;
+      pointmove[pindex] = 1;
+    }
+
+  } else {    
+    pindex = tris[i].p1;
+    if (!pointmove[pindex]) {
+      pt = points[pindex].x;
+      if (vxflag) pt[0] = points_original[i][0] + vx * delta;
+      if (vyflag) pt[1] = points_original[i][1] + vy * delta;
+      if (vzflag) pt[2] = points_original[i][2] + vz * delta;
+      pointmove[pindex] = 1;
+    }
+    pindex = tris[i].p2;
+    if (!pointmove[pindex]) {
+      pt = points[pindex].x;
+      if (vxflag) pt[0] = points_original[i][0] + vx * delta;
+      if (vyflag) pt[1] = points_original[i][1] + vy * delta;
+      if (vzflag) pt[2] = points_original[i][2] + vz * delta;
+      pointmove[pindex] = 1;
+    }
+    pindex = tris[i].p3;
+    if (!pointmove[pindex]) {
+      pt = points[pindex].x;
+      if (vxflag) pt[0] = points_original[i][0] + vx * delta;
+      if (vyflag) pt[1] = points_original[i][1] + vy * delta;
+      if (vzflag) pt[2] = points_original[i][2] + vz * delta;
+      pointmove[pindex] = 1;
+    }
   }
 
-  for (int i = 0; i < nsurf; i++) {
-    xsurf_original[i][0] = xsurf[i][0];
-    xsurf_original[i][1] = xsurf[i][1];
-    xsurf_original[i][2] = xsurf[i][2];
-    omegasurf[i][0] = omega_rotate*runit[0];
-    omegasurf[i][1] = omega_rotate*runit[1];
-    omegasurf[i][2] = omega_rotate*runit[2];
+  // xsurf and vsurf
+
+  if (vxflag) {
+    vsurf[i][0] = vx;
+    xsurf[i][0] = xsurf_original[i][0] + vx * delta;
   }
-  */
+  if (vyflag) {
+    vsurf[i][1] = vy;
+    xsurf[i][1] = xsurf_original[i][1] + vy * delta;
+  }
+  if (vzflag) {
+    vsurf[i][2] = vz;
+    xsurf[i][2] = xsurf_original[i][2] + vz * delta;
+  }
 }
 
-/* ----------------------------------------------------------------------
-   turn off surface motion and free memory
+/* -------------------------------------------------------------------------
+   X = X0 + A sin(w*dt)
 ------------------------------------------------------------------------- */
 
-void FixSurfaceGlobal::move_clear()
+void FixSurfaceGlobal::move_wiggle(int imotion, int i)
 {
-  /*
-  // reset v,omega to zero
+  Motion *motion = &motions[imotion];
+  double time_origin = motion->time_origin;
+  double omega = motion->omega;
+  double delta = (update->ntimestep - time_origin) * dt;
+  double arg = omega * delta;
+  double sine = sin(arg);
+  double cosine = cos(arg);
 
-  for (int i = 0; i < nsurf; i++) {
-    vsurf[i][0] = vsurf[i][1] = vsurf[i][2] = 0.0;
-    omegasurf[i][0] = omegasurf[i][1] = omegasurf[i][2] = 0.0;
+  int axflag = motion->axflag;
+  int ayflag = motion->ayflag;
+  int azflag = motion->azflag;
+  double ax = motion->ax;
+  double ay = motion->ay;
+  double az = motion->az;
+  
+  // points - use of pointmove only moves a point once
+
+  int pindex;
+  double *pt;
+  
+  if (dimension == 2) {
+    pindex = lines[i].p1;
+    if (!pointmove[pindex]) {
+      pt = points[pindex].x;
+      if (axflag) pt[0] = points_original[i][0] + ax * sine;
+      if (ayflag) pt[1] = points_original[i][1] + ay * sine;
+      pointmove[pindex] = 1;
+    }
+    pindex = lines[i].p2;
+    if (!pointmove[pindex]) {
+      pt = points[pindex].x;
+      if (axflag) pt[0] = points_original[i][0] + ax * sine;
+      if (ayflag) pt[1] = points_original[i][1] + ay * sine;
+      pointmove[pindex] = 1;
+    }
+
+  } else {    
+    pindex = tris[i].p1;
+    if (!pointmove[pindex]) {
+      pt = points[pindex].x;
+      if (axflag) pt[0] = points_original[i][0] + ax * sine;
+      if (ayflag) pt[1] = points_original[i][1] + ay * sine;
+      if (azflag) pt[2] = points_original[i][2] + az * sine;
+      pointmove[pindex] = 1;
+    }
+    pindex = tris[i].p2;
+    if (!pointmove[pindex]) {
+      pt = points[pindex].x;
+      if (axflag) pt[0] = points_original[i][0] + ax * sine;
+      if (ayflag) pt[1] = points_original[i][1] + ay * sine;
+      if (azflag) pt[2] = points_original[i][2] + az * sine;
+      pointmove[pindex] = 1;
+    }
+    pindex = tris[i].p3;
+    if (!pointmove[pindex]) {
+      pt = points[pindex].x;
+      if (axflag) pt[0] = points_original[i][0] + ax * sine;
+      if (ayflag) pt[1] = points_original[i][1] + ay * sine;
+      if (azflag) pt[2] = points_original[i][2] + az * sine;
+      pointmove[pindex] = 1;
+    }
   }
 
-  // deallocate memory
+  // xsurf and vsurf
 
-  memory->destroy(points_lastneigh);
-  memory->destroy(points_original);
-  memory->destroy(xsurf_original);
-  points_lastneigh = nullptr;
-  points_original = nullptr;
-  xsurf_original = nullptr;
-  */
+  if (axflag) {
+    vsurf[i][0] = ax * omega * cosine;
+    xsurf[i][0] = xsurf_original[i][0] + ax * sine;
+  }
+  if (ayflag) {
+    vsurf[i][1] = ay * omega * cosine;
+    xsurf[i][1] = xsurf_original[i][1] + ay * sine;
+  }
+  if (azflag) {
+    vsurf[i][2] = az * omega * cosine;
+    xsurf[i][2] = xsurf_original[i][2] + az * sine;
+  }
+}
+
+/* -------------------------------------------------------------------------
+   rotate by right-hand rule around omega
+------------------------------------------------------------------------- */
+
+void FixSurfaceGlobal::move_rotate(int imotion, int i)
+{
+  Motion *motion = &motions[imotion];
+
+  double time_origin = motion->time_origin;
+  double omega = motion->omega;
+  double *rpoint = motion->point;
+  double *runit = motion->unit;
+  
+  double delta = (update->ntimestep - time_origin) * dt;
+  double arg = omega * delta;
+  double cosine = cos(arg);
+  double sine = sin(arg);
+
+  // P = point = vector = point of rotation
+  // R = vector = axis of rotation
+  // w = omega of rotation (from period)
+  // X0 = xoriginal = initial coord of atom
+  // R0 = runit = unit vector for R
+  // D = X0 - P = vector from P to X0
+  // C = (D dot R0) R0 = projection of atom coord onto R line
+  // A = D - C = vector from R line to X0
+  // B = R0 cross A = vector perp to A in plane of rotation
+  // A,B define plane of circular rotation around R line
+  // X = P + C + A cos(w*dt) + B sin(w*dt)
+  // V = w R0 cross (A cos(w*dt) + B sin(w*dt))
+
+  // points - use of pointmove only moves a point once
+
+  int pindex;
+
+  if (dimension == 2) {
+    pindex = lines[i].p1;
+    if (!pointmove[pindex]) {
+      move_rotate_point(pindex,rpoint,runit,cosine,sine);
+      pointmove[pindex] = 1;
+    }
+    pindex = lines[i].p2;
+    if (!pointmove[pindex]) {
+      move_rotate_point(pindex,rpoint,runit,cosine,sine);
+      pointmove[pindex] = 1;
+    }
+
+  } else {    
+    pindex = tris[i].p1;
+    if (!pointmove[pindex]) {
+      move_rotate_point(pindex,rpoint,runit,cosine,sine);
+      pointmove[pindex] = 1;
+    }
+    pindex = tris[i].p2;
+    if (!pointmove[pindex]) {
+      move_rotate_point(pindex,rpoint,runit,cosine,sine);
+      pointmove[pindex] = 1;
+    }
+    pindex = tris[i].p3;
+    if (!pointmove[pindex]) {
+      move_rotate_point(pindex,rpoint,runit,cosine,sine);
+      pointmove[pindex] = 1;
+    }
+  }
+
+  // xsurf and vsurf
+  
+  double ddotr;
+  double a[3],b[3],c[3],d[3],disp[3];
+
+  d[0] = xsurf_original[i][0] - rpoint[0];
+  d[1] = xsurf_original[i][1] - rpoint[1];
+  d[2] = xsurf_original[i][2] - rpoint[2];
+  ddotr = d[0]*runit[0] + d[1]*runit[1] + d[2]*runit[2];
+  c[0] = ddotr*runit[0];
+  c[1] = ddotr*runit[1];
+  c[2] = ddotr*runit[2];
+  a[0] = d[0] - c[0];
+  a[1] = d[1] - c[1];
+  a[2] = d[2] - c[2];
+  b[0] = runit[1]*a[2] - runit[2]*a[1];
+  b[1] = runit[2]*a[0] - runit[0]*a[2];
+  b[2] = runit[0]*a[1] - runit[1]*a[0];
+  disp[0] = a[0]*cosine  + b[0]*sine;
+  disp[1] = a[1]*cosine  + b[1]*sine;
+  disp[2] = a[2]*cosine  + b[2]*sine;
+  
+  xsurf[i][0] = rpoint[0] + c[0] + disp[0];
+  xsurf[i][1] = rpoint[1] + c[1] + disp[1];
+  xsurf[i][2] = rpoint[2] + c[2] + disp[2];
+  vsurf[i][0] = omega * (runit[1]*disp[2] - runit[2]*disp[1]);
+  vsurf[i][1] = omega * (runit[2]*disp[0] - runit[0]*disp[2]);
+  vsurf[i][2] = omega * (runit[0]*disp[1] - runit[1]*disp[0]);
+
+  // normals
+
+  double p12[3],p13[3];
+  double *p1,*p2,*p3;
+
+  if (dimension == 2) {
+    double zunit[3] = {0.0,0.0,1.0};
+    p1 = points[lines[i].p1].x;
+    p2 = points[lines[i].p2].x;
+    MathExtra::sub3(p2,p1,p12);
+    MathExtra::cross3(zunit,p12,lines[i].norm);
+    MathExtra::norm3(lines[i].norm);
+    
+  } else {
+    p1 = points[tris[i].p1].x;
+    p2 = points[tris[i].p2].x;
+    p3 = points[tris[i].p3].x;
+    MathExtra::sub3(p1,p2,p12);
+    MathExtra::sub3(p1,p3,p13);
+    MathExtra::cross3(p12,p13,tris[i].norm);
+    MathExtra::norm3(tris[i].norm);
+  }
+}
+
+/* ------------------------------------------------------------------------- */
+
+void FixSurfaceGlobal::move_rotate_point(int i, double *rpoint, double *runit,
+					 double cosine, double sine)
+{
+  double a[3],b[3],c[3],d[3],disp[3];
+  
+  d[0] = points_original[i][0] - rpoint[0];
+  d[1] = points_original[i][1] - rpoint[1];
+  d[2] = points_original[i][2] - rpoint[2];
+
+  double ddotr = d[0]*runit[0] + d[1]*runit[1] + d[2]*runit[2];
+  c[0] = ddotr*runit[0];
+  c[1] = ddotr*runit[1];
+  c[2] = ddotr*runit[2];
+  a[0] = d[0] - c[0];
+  a[1] = d[1] - c[1];
+  a[2] = d[2] - c[2];
+  b[0] = runit[1]*a[2] - runit[2]*a[1];
+  b[1] = runit[2]*a[0] - runit[0]*a[2];
+  b[2] = runit[0]*a[1] - runit[1]*a[0];
+  disp[0] = a[0]*cosine  + b[0]*sine;
+  disp[1] = a[1]*cosine  + b[1]*sine;
+  disp[2] = a[2]*cosine  + b[2]*sine;
+
+  double *pt = points[i].x;
+  pt[0] = rpoint[0] + c[0] + disp[0];
+  pt[1] = rpoint[1] + c[1] + disp[1];
+  pt[2] = rpoint[2] + c[2] + disp[2];
 }

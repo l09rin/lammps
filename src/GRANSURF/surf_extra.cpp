@@ -291,7 +291,7 @@ int nearest_point_line(double *x, double *p1, double *p2, double *pt)
 
   return ptflag;
 }
-  
+
 /* ---------------------------------------------------------------------- */
 
 }
