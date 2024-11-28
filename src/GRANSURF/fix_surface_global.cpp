@@ -123,7 +123,7 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
       } else if (strcmp(arg[iarg+1],"stl") == 0) {
 	if (iarg+4 > narg) error->all(FLERR,"Illegal fix surface/global command");
 	int stype = utils::inumeric(FLERR,arg[iarg+2],false,lmp);
-	extract_from_stlfile(arg[iarg+3]);
+	extract_from_stlfile(arg[iarg+3],stype);
 	iarg += 4;
       } else error->all(FLERR,"Illegal fix surface/global command");
     } else break;
@@ -170,11 +170,11 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
 
       int classic_flag = 1;
       if (strcmp(arg[iarg+3], "granular") == 0) classic_flag = 0;
-      iarg += 4;
+      iarg += 3;
       
       if (classic_flag) {
 	iarg = model->define_classic_model(arg, iarg, narg);
-	if (strcmp(arg[iarg],"limit_damping") == 0) {
+	if (iarg < narg && strcmp(arg[iarg],"limit_damping") == 0) {
 	  model->limit_damping = 1;
 	  iarg++;
 	}
@@ -222,7 +222,7 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
 
   // maxsurftype = max surf type of any input surf (for now)
   
-  int maxsurftype = 0;
+  maxsurftype = 0;
   if (dimension == 2) {
     for (int i = 0; i < nlines; i++)
       maxsurftype = MAX(maxsurftype,lines[i].type);
@@ -236,7 +236,7 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
   // flat overrides FLATTHRESH of one degree
   
   int Twall_defined = 0;
-  double flatthresh = FLATTHRESH;
+  flatthresh = FLATTHRESH;
   
   while (iarg < narg) {
     if (strcmp(arg[iarg],"smaxtype") == 0) {
@@ -525,6 +525,13 @@ void FixSurfaceGlobal::init()
       error->all(FLERR,
 		 "Variable {} for fix surface/global must be an equal style variable",
 		 tstr);
+  }
+
+  // initialize pointmove settings
+  // fix_modify move can be set between runs
+
+  if (anymove) {
+    for (int i = 0; i < npoints; i++) pointmove[i] = 0;
   }
 }
 
@@ -1122,6 +1129,7 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
       memory->create(points_original,npoints,3,"surface/global:points_original");
       memory->create(xsurf_original,nsurf,3,"surface/global:xsurf_original");
       memory->create(pointmove,npoints,"surface/global:pointmove");
+      printf("PM ALLOC %p %d\n",pointmove,npoints);
     }
 
     anymove = 1;
@@ -1618,7 +1626,7 @@ void FixSurfaceGlobal::extract_from_molecule(char *molID)
    identify unique points using hash
 ------------------------------------------------------------------------- */
 
-void FixSurfaceGlobal::extract_from_stlfile(char *filename)
+void FixSurfaceGlobal::extract_from_stlfile(char *filename, int stype)
 {
   if (dimension == 2)
     error->all(FLERR,"Fix surface/global cannot use an STL file for 2d simulations");
@@ -1630,13 +1638,16 @@ void FixSurfaceGlobal::extract_from_stlfile(char *filename)
   double **stltris;
   ntris = stl->read_file(filename,stltris);
 
+  tris = (Tri *) memory->srealloc(tris,ntris*sizeof(Tri),
+                                  "surface/global:tris");
+  
   // loop over STL tris
   // populate points and tris data structs
-  // set molecule and type of tri = 1
+  // for each tri: set molID = 1 and type = stype
 
   for (int itri = 0; itri < ntris; itri++) {
     tris[itri].mol = 1;
-    tris[itri].type = 1;
+    tris[itri].type = stype;
 
     auto key = std::make_tuple(stltris[itri][0],stltris[itri][1],stltris[itri][2]);
     if (hash->find(key) == hash->end()) {
@@ -1815,22 +1826,22 @@ void FixSurfaceGlobal::connectivity2d_global()
       dotnorm = MathExtra::dot3(inorm,jnorm);
 
       if (lines[i].p1 == lines[j].p1) {
-        connect2d[i].pwhich_p1[j] = 0;
-        connect2d[i].nside_p1[j] = OPPOSITE_SIDE;
-        if (dotnorm < -1.0+flatthresh) connect2d[i].aflag_p1[j] = FLAT;
+        connect2d[i].pwhich_p1[m] = 0;
+        connect2d[i].nside_p1[m] = OPPOSITE_SIDE;
+        if (dotnorm < -1.0+flatthresh) connect2d[i].aflag_p1[m] = FLAT;
         else {
           MathExtra::cross3(inorm,jnorm,icrossj);
-          if (icrossj[2] > 0.0) connect2d[i].aflag_p1[j] = CONCAVE;
-          else connect2d[i].aflag_p1[j] = CONVEX;
+          if (icrossj[2] > 0.0) connect2d[i].aflag_p1[m] = CONCAVE;
+          else connect2d[i].aflag_p1[m] = CONVEX;
         }
       } else if (lines[i].p1 == lines[j].p2) {
-        connect2d[i].pwhich_p1[j] = 1;
-        connect2d[i].nside_p1[j] = SAME_SIDE;
-        if (dotnorm > 1.0-flatthresh) connect2d[i].aflag_p1[j] = FLAT;
+        connect2d[i].pwhich_p1[m] = 1;
+        connect2d[i].nside_p1[m] = SAME_SIDE;
+        if (dotnorm > 1.0-flatthresh) connect2d[i].aflag_p1[m] = FLAT;
         else {
           MathExtra::cross3(inorm,jnorm,icrossj);
-          if (icrossj[2] < 0.0) connect2d[i].aflag_p1[j] = CONCAVE;
-          else connect2d[i].aflag_p1[j] = CONVEX;
+          if (icrossj[2] < 0.0) connect2d[i].aflag_p1[m] = CONCAVE;
+          else connect2d[i].aflag_p1[m] = CONVEX;
         }
       }
     }
@@ -1843,22 +1854,22 @@ void FixSurfaceGlobal::connectivity2d_global()
       dotnorm = MathExtra::dot3(inorm,jnorm);
 
       if (lines[i].p2 == lines[j].p1) {
-        connect2d[i].pwhich_p2[j] = 0;
-        connect2d[i].nside_p2[j] = SAME_SIDE;
-        if (dotnorm > 1.0-flatthresh) connect2d[i].aflag_p2[j] = FLAT;
+        connect2d[i].pwhich_p2[m] = 0;
+        connect2d[i].nside_p2[m] = SAME_SIDE;
+        if (dotnorm > 1.0-flatthresh) connect2d[i].aflag_p2[m] = FLAT;
         else {
           MathExtra::cross3(inorm,jnorm,icrossj);
-          if (icrossj[2] > 0.0) connect2d[i].aflag_p2[j] = CONCAVE;
-          else connect2d[i].aflag_p2[j] = CONVEX;
+          if (icrossj[2] > 0.0) connect2d[i].aflag_p2[m] = CONCAVE;
+          else connect2d[i].aflag_p2[m] = CONVEX;
         }
       } else if (lines[i].p2 == lines[j].p2) {
-        connect2d[i].pwhich_p2[j] = 1;
-        connect2d[i].nside_p2[j] = OPPOSITE_SIDE;
-        if (dotnorm < -1.0+flatthresh) connect2d[i].aflag_p2[j] = FLAT;
+        connect2d[i].pwhich_p2[m] = 1;
+        connect2d[i].nside_p2[m] = OPPOSITE_SIDE;
+        if (dotnorm < -1.0+flatthresh) connect2d[i].aflag_p2[m] = FLAT;
         else {
           MathExtra::cross3(inorm,jnorm,icrossj);
-          if (icrossj[2] < 0.0) connect2d[i].aflag_p2[j] = CONCAVE;
-          else connect2d[i].aflag_p2[j] = CONVEX;
+          if (icrossj[2] < 0.0) connect2d[i].aflag_p2[m] = CONCAVE;
+          else connect2d[i].aflag_p2[m] = CONVEX;
         }
       }
     }
@@ -2084,28 +2095,28 @@ void FixSurfaceGlobal::connectivity3d_global()
       if ((jpfirst == 1 && jpsecond == 2) ||
 	  (jpfirst == 2 && jpsecond == 3) ||
 	  (jpfirst == 3 && jpsecond == 1)) {
-	connect3d[i].ewhich_e1[j] = jpfirst - 1;
-	connect3d[i].nside_e1[j] = OPPOSITE_SIDE;
-	if (dotnorm < -1.0+flatthresh) connect3d[i].aflag_e1[j] = FLAT;
+	connect3d[i].ewhich_e1[m] = jpfirst - 1;
+	connect3d[i].nside_e1[m] = OPPOSITE_SIDE;
+	if (dotnorm < -1.0+flatthresh) connect3d[i].aflag_e1[m] = FLAT;
 	else {
 	  MathExtra::cross3(inorm,jnorm,icrossj);
 	  if (MathExtra::dot3(icrossj,iedge) > 0.0)
-	    connect3d[i].aflag_e1[j] = CONCAVE;
+	    connect3d[i].aflag_e1[m] = CONCAVE;
 	  else
-	    connect3d[i].aflag_e1[j] = CONVEX;
+	    connect3d[i].aflag_e1[m] = CONVEX;
 	}
       } else {
-	if (jpfirst == 2) connect3d[i].ewhich_e1[j] = 0;
-	else if (jpfirst == 3) connect3d[i].ewhich_e1[j] = 1;
-	else if (jpfirst == 1) connect3d[i].ewhich_e1[j] = 2;
-	connect3d[i].nside_e1[j] = SAME_SIDE;
-        if (dotnorm > 1.0-flatthresh) connect3d[i].aflag_e1[j] = FLAT;
+	if (jpfirst == 2) connect3d[i].ewhich_e1[m] = 0;
+	else if (jpfirst == 3) connect3d[i].ewhich_e1[m] = 1;
+	else if (jpfirst == 1) connect3d[i].ewhich_e1[m] = 2;
+	connect3d[i].nside_e1[m] = SAME_SIDE;
+        if (dotnorm > 1.0-flatthresh) connect3d[i].aflag_e1[m] = FLAT;
         else {
           MathExtra::cross3(inorm,jnorm,icrossj);
           if (MathExtra::dot3(icrossj,iedge) < 0.0)
-	    connect3d[i].aflag_e1[j] = CONCAVE;
+	    connect3d[i].aflag_e1[m] = CONCAVE;
           else
-	    connect3d[i].aflag_e1[j] = CONVEX;
+	    connect3d[i].aflag_e1[m] = CONVEX;
         }
       }
     }
@@ -2129,28 +2140,28 @@ void FixSurfaceGlobal::connectivity3d_global()
       if ((jpfirst == 1 && jpsecond == 2) ||
 	  (jpfirst == 2 && jpsecond == 3) ||
 	  (jpfirst == 3 && jpsecond == 1)) {
-	connect3d[i].ewhich_e2[j] = jpfirst - 1;
-	connect3d[i].nside_e2[j] = OPPOSITE_SIDE;
-	if (dotnorm < -1.0+flatthresh) connect3d[i].aflag_e2[j] = FLAT;
+	connect3d[i].ewhich_e2[m] = jpfirst - 1;
+	connect3d[i].nside_e2[m] = OPPOSITE_SIDE;
+	if (dotnorm < -1.0+flatthresh) connect3d[i].aflag_e2[m] = FLAT;
 	else {
 	  MathExtra::cross3(inorm,jnorm,icrossj);
 	  if (MathExtra::dot3(icrossj,iedge) > 0.0)
-	    connect3d[i].aflag_e2[j] = CONCAVE;
+	    connect3d[i].aflag_e2[m] = CONCAVE;
 	  else
-	    connect3d[i].aflag_e2[j] = CONVEX;
+	    connect3d[i].aflag_e2[m] = CONVEX;
 	}
       } else {
-	if (jpfirst == 2) connect3d[i].ewhich_e2[j] = 0;
-	else if (jpfirst == 3) connect3d[i].ewhich_e2[j] = 1;
-	else if (jpfirst == 1) connect3d[i].ewhich_e2[j] = 2;
-	connect3d[i].nside_e2[j] = SAME_SIDE;
-        if (dotnorm > 1.0-flatthresh) connect3d[i].aflag_e2[j] = FLAT;
+	if (jpfirst == 2) connect3d[i].ewhich_e2[m] = 0;
+	else if (jpfirst == 3) connect3d[i].ewhich_e2[m] = 1;
+	else if (jpfirst == 1) connect3d[i].ewhich_e2[m] = 2;
+	connect3d[i].nside_e2[m] = SAME_SIDE;
+        if (dotnorm > 1.0-flatthresh) connect3d[i].aflag_e2[m] = FLAT;
         else {
           MathExtra::cross3(inorm,jnorm,icrossj);
           if (MathExtra::dot3(icrossj,iedge) < 0.0)
-	    connect3d[i].aflag_e2[j] = CONCAVE;
+	    connect3d[i].aflag_e2[m] = CONCAVE;
           else
-	    connect3d[i].aflag_e2[j] = CONVEX;
+	    connect3d[i].aflag_e2[m] = CONVEX;
         }
       }
     }
@@ -2174,28 +2185,28 @@ void FixSurfaceGlobal::connectivity3d_global()
       if ((jpfirst == 1 && jpsecond == 2) ||
 	  (jpfirst == 2 && jpsecond == 3) ||
 	  (jpfirst == 3 && jpsecond == 1)) {
-	connect3d[i].ewhich_e3[j] = jpfirst - 1;
-	connect3d[i].nside_e3[j] = OPPOSITE_SIDE;
-	if (dotnorm < -1.0+flatthresh) connect3d[i].aflag_e3[j] = FLAT;
+	connect3d[i].ewhich_e3[m] = jpfirst - 1;
+	connect3d[i].nside_e3[m] = OPPOSITE_SIDE;
+	if (dotnorm < -1.0+flatthresh) connect3d[i].aflag_e3[m] = FLAT;
 	else {
 	  MathExtra::cross3(inorm,jnorm,icrossj);
 	  if (MathExtra::dot3(icrossj,iedge) > 0.0)
-	    connect3d[i].aflag_e3[j] = CONCAVE;
+	    connect3d[i].aflag_e3[m] = CONCAVE;
 	  else
-	    connect3d[i].aflag_e3[j] = CONVEX;
+	    connect3d[i].aflag_e3[m] = CONVEX;
 	}
       } else {
-	if (jpfirst == 2) connect3d[i].ewhich_e3[j] = 0;
-	else if (jpfirst == 3) connect3d[i].ewhich_e3[j] = 1;
-	else if (jpfirst == 1) connect3d[i].ewhich_e3[j] = 2;
-	connect3d[i].nside_e3[j] = SAME_SIDE;
-        if (dotnorm > 1.0-flatthresh) connect3d[i].aflag_e3[j] = FLAT;
+	if (jpfirst == 2) connect3d[i].ewhich_e3[m] = 0;
+	else if (jpfirst == 3) connect3d[i].ewhich_e3[m] = 1;
+	else if (jpfirst == 1) connect3d[i].ewhich_e3[m] = 2;
+	connect3d[i].nside_e3[m] = SAME_SIDE;
+        if (dotnorm > 1.0-flatthresh) connect3d[i].aflag_e3[m] = FLAT;
         else {
           MathExtra::cross3(inorm,jnorm,icrossj);
 	  if (MathExtra::dot3(icrossj,iedge) < 0.0)
-	    connect3d[i].aflag_e3[j] = CONCAVE;
+	    connect3d[i].aflag_e3[m] = CONCAVE;
           else
-	    connect3d[i].aflag_e3[j] = CONVEX;
+	    connect3d[i].aflag_e3[m] = CONVEX;
         }
       }
     }
@@ -2228,6 +2239,8 @@ void FixSurfaceGlobal::connectivity3d_global()
   // allocate all ragged corner arrays which Connect2d will point to
   // first subtract self from each point's count
   //   b/c connect2d vectors will NOT include self
+
+  for (int i = 0; i < npoints; i++) counts[i]--;
 
   memory->create_ragged(neigh_c1,npoints,counts,"surface/global:neigh_c1");
   memory->create_ragged(neigh_c2,npoints,counts,"surface/global:neigh_c2");
@@ -2309,21 +2322,21 @@ void FixSurfaceGlobal::connectivity3d_global()
   for (int i = 0; i < ntris; i++) {
     for (m = 0; m < connect3d[i].nc1; m++) {
       j = connect3d[i].neigh_c1[m];
-      if (tris[i].p1 == tris[j].p1) connect3d[i].cwhich_c1[j] = 0;
-      else if (tris[i].p1 == tris[j].p2) connect3d[i].cwhich_c1[j] = 1;
-      else if (tris[i].p1 == tris[j].p3) connect3d[i].cwhich_c1[j] = 2;
+      if (tris[i].p1 == tris[j].p1) connect3d[i].cwhich_c1[m] = 0;
+      else if (tris[i].p1 == tris[j].p2) connect3d[i].cwhich_c1[m] = 1;
+      else if (tris[i].p1 == tris[j].p3) connect3d[i].cwhich_c1[m] = 2;
     }
     for (m = 0; m < connect3d[i].nc2; m++) {
       j = connect3d[i].neigh_c2[m];
-      if (tris[i].p2 == tris[j].p1) connect3d[i].cwhich_c2[j] = 0;
-      else if (tris[i].p2 == tris[j].p2) connect3d[i].cwhich_c2[j] = 1;
-      else if (tris[i].p2 == tris[j].p3) connect3d[i].cwhich_c2[j] = 2;
+      if (tris[i].p2 == tris[j].p1) connect3d[i].cwhich_c2[m] = 0;
+      else if (tris[i].p2 == tris[j].p2) connect3d[i].cwhich_c2[m] = 1;
+      else if (tris[i].p2 == tris[j].p3) connect3d[i].cwhich_c2[m] = 2;
     }
     for (m = 0; m < connect3d[i].nc3; m++) {
       j = connect3d[i].neigh_c3[m];
-      if (tris[i].p3 == tris[j].p1) connect3d[i].cwhich_c3[j] = 0;
-      else if (tris[i].p3 == tris[j].p2) connect3d[i].cwhich_c3[j] = 1;
-      else if (tris[i].p3 == tris[j].p3) connect3d[i].cwhich_c3[j] = 2;
+      if (tris[i].p3 == tris[j].p1) connect3d[i].cwhich_c3[m] = 0;
+      else if (tris[i].p3 == tris[j].p2) connect3d[i].cwhich_c3[m] = 1;
+      else if (tris[i].p3 == tris[j].p3) connect3d[i].cwhich_c3[m] = 2;
     }
   }
 }

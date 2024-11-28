@@ -278,7 +278,7 @@ class FixSurfaceGlobal : public Fix {
   // private methods
 
   void extract_from_molecule(char *);
-  void extract_from_stlfile(char *);
+  void extract_from_stlfile(char *, int);
   void connectivity2d_global();
   void connectivity3d_global();
   void surface_attributes();

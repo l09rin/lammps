@@ -18,8 +18,8 @@ neigh_modify	delay 0 every 1 check yes
 
 #displace_atoms  all rotate 0 0 0 0 0 1 45
 
-fix             20 all surface/global surf.tribox.stl hooke &
-                4000.0 NULL 100.0 NULL 0.5 1
+fix             20 all surface/global input stl 2 surf.tri.stl &
+                model * * hooke 4000.0 NULL 100.0 NULL 0.5 1
 #fix             20 all surface/global surf.tribox.stl hooke/history &
 #                4000.0 NULL 100.0 NULL 0.5 1
 
@@ -28,8 +28,8 @@ fix		3 all gravity 1.0 vector 0 0 -1
 #fix             4 all viscous 0.2
 
 region          slab block -2 2 -2 2 -2 2 units box
-fix             ins all pour 100 1 4767548 vol 0.4 10 &
-	        diam one 1.0 region slab ignore
+#fix             ins all pour 100 1 4767548 vol 0.4 10 &
+#	        diam one 1.0 region slab ignore
 
 timestep	0.005
 
@@ -50,14 +50,14 @@ dump_modify	2 pad 5
 
 run	        5000
 
-fix_modify      20 move rotate 0 0 0 0 0 1 25
+fix_modify      20 move * rotate 0 0 0 0 0 1 25
 run	        5000
 
-fix_modify      20 move none
+fix_modify      20 move * none
 run             5000
 
-fix_modify      20 move rotate 0 0 0 1 1 1 25
+fix_modify      20 move * rotate 0 0 0 1 1 1 25
 run	        5000
 
-fix_modify      20 move none
+fix_modify      20 move * none
 run             5000
