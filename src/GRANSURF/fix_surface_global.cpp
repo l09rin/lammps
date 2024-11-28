@@ -23,17 +23,18 @@
 //         or global array of forces per molecule ID (consecutive) ?
 //         ditto for particle contact counts ?
 // NOTE: enable fix move transrotate and variable styles ?
-// NOTE: allow use of the scale keyword in the molecule command for lines/tris ?
 // NOTE: what about reduced vs box units in fix_modify move params like fix_move ?
 // NOTE: what about PBC
 //       connecntion finding, for moving surfs, surfs which overlap PBC
 //       how is this handled for local surfs
-// NOTE: init motion instance values to zero when allocate it for first time ?
+// NOTE: init motion all instance values to zero when allocate it for first time ?
 // NOTE: could allow non-assignment of type pairs
-//       to enable some particles pass thru some surfs
+//       to enable some particles to pass thru some surfs
 // NOTE: print stats on # of surfs, connections, min/max surf sizes
 // NOTE: print stats on fix modify move and type/region effects
 // NOTE: memory usage stats are incomplete: neigh list, per-surf data
+
+// doc:  can use scale keyword in the molecule command for lines/tris
 
 #include "fix_surface_global.h"
 
