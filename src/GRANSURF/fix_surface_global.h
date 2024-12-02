@@ -65,10 +65,6 @@ class FixSurfaceGlobal : public Fix {
   int tvar;
   char *tstr;
 
-  // map for identifying unique points
-
-  std::map<std::tuple<double,double,double>,int> *hash;
-
   // per-surf properties
 
   int maxsurftype;
@@ -277,8 +273,8 @@ class FixSurfaceGlobal : public Fix {
 
   // private methods
 
-  void extract_from_molecule(char *);
-  void extract_from_stlfile(char *, int);
+  void extract_from_molecule(char *, std::map<std::tuple<double,double,double>,int> *);
+  void extract_from_stlfile(char *, int, std::map<std::tuple<double,double,double>,int> *);
   void check2d();
   void check3d();
   void connectivity2d();
@@ -290,6 +286,7 @@ class FixSurfaceGlobal : public Fix {
   void move_linear(int, int);
   void move_wiggle(int, int);
   void move_rotate(int, int);
+  void move_transrotate(int, int);
   void move_rotate_point(int, double *, double *, double, double);
 };
 

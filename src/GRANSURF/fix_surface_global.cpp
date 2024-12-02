@@ -14,24 +14,23 @@
 
 // NOTE: allow for multiple instances of this fix or not ?
 // NOTE: need to order connections with FLAT first?
-// NOTE: warn for too-small lines
+// NOTE: warn for too-small lines - how to know smallest particle size ?
 // NOTE: more efficient neighbor lists, see Joel's 18 Nov email for ideas
 // NOTE: alter connection info if 2 lines/tris are different types ?
 // NOTE: should this fix produce any output
 //         global array with force on each surf
 //         or global array of forces per molecule ID (consecutive) ?
 //         ditto for particle contact counts ?
-// NOTE: enable fix move transrotate and variable styles ?
 // NOTE: what about reduced vs box units in fix_modify move params like fix_move ?
 // NOTE: what about PBC
 //       connection finding, for moving surfs, surfs which overlap PBC
 //       how is this handled for local surfs
-// NOTE: init motion all instance values to zero when allocate it for first time ?
 // NOTE: could allow non-assignment of type pairs
 //       to enable some particles to pass thru some surfs
+
+// NOTE: enable fix move variable style for equal-style vars only ?
 // NOTE: print stats on # of surfs, connections, min/max surf sizes
 // NOTE: print stats on fix modify move and type/region effects
-// NOTE: memory usage stats are incomplete: neigh list, per-surf data
 
 // doc:  can use scale keyword in the molecule command for lines/tris
 
@@ -99,7 +98,7 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
 
   // process one or more inputs
   // read triangles/lines from molecule template IDs or STL files
-  // create a map to store unique points
+  // hash = map to store unique points
   //   key = xyz coords of a point
   //   value = index into unique points vector
 
@@ -110,7 +109,8 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
   tris = nullptr;
 
   int ninput = 0;
-  hash = new std::map<std::tuple<double,double,double>,int>();
+  std::map<std::tuple<double,double,double>,int> *hash =
+    new std::map<std::tuple<double,double,double>,int>();
 
   int iarg = 3;
   while (iarg < narg) {
@@ -118,12 +118,12 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
       if (iarg+2 > narg) error->all(FLERR,"Illegal fix surface/global command");
       if (strcmp(arg[iarg+1],"mol") == 0) {
 	if (iarg+3 > narg) error->all(FLERR,"Illegal fix surface/global command");
-	extract_from_molecule(arg[iarg+2]);
+	extract_from_molecule(arg[iarg+2],hash);
 	iarg += 3;
       } else if (strcmp(arg[iarg+1],"stl") == 0) {
 	if (iarg+4 > narg) error->all(FLERR,"Illegal fix surface/global command");
 	int stype = utils::inumeric(FLERR,arg[iarg+2],false,lmp);
-	extract_from_stlfile(arg[iarg+3],stype);
+	extract_from_stlfile(arg[iarg+3],stype,hash);
 	iarg += 4;
       } else error->all(FLERR,"Illegal fix surface/global command");
     } else break;
@@ -565,8 +565,8 @@ void FixSurfaceGlobal::initial_integrate(int vflag)
     if (mstyle == LINEAR) move_linear(imotion,i);
     else if (mstyle == WIGGLE) move_wiggle(imotion,i);
     else if (mstyle == ROTATE) move_rotate(imotion,i);
-    //else if (mstyle == TRANSROTATE) move_rotate(imotion,i);
-    //else if (mstyle == VARIABLE) move_rotate(imotion,i);
+    else if (mstyle == TRANSROT) move_transrotate(imotion,i);
+    //else if (mstyle == VARIABLE) move_variable(imotion,i);
   }
 
   // clear pointmove settings
@@ -1134,7 +1134,6 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
       memory->create(points_original,npoints,3,"surface/global:points_original");
       memory->create(xsurf_original,nsurf,3,"surface/global:xsurf_original");
       memory->create(pointmove,npoints,"surface/global:pointmove");
-      printf("PM ALLOC %p %d\n",pointmove,npoints);
     }
 
     anymove = 1;
@@ -1142,6 +1141,7 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
     // parse additional move style arguments
     
     int styleargs = modify_param_move(&motions[imotion],narg-2,&arg[2]);
+    motions[imotion].time_origin = update->ntimestep;
 
     int ifix = modify->find_fix(id);
     modify->fmask[ifix] |= INITIAL_INTEGRATE;
@@ -1255,6 +1255,10 @@ int FixSurfaceGlobal::modify_param_move(Motion *motion, int narg, char **arg)
       motion->vzflag = 1;
       motion->vz = utils::numeric(FLERR, arg[3], false, lmp);
     }
+ 
+    if (dimension == 2)
+      if (motion->vzflag && (motion->vz != 0.0))
+        error->all(FLERR,"Fix_modify move cannot set linear z motion for 2d problem");
 
     return 4;
   }
@@ -1279,6 +1283,10 @@ int FixSurfaceGlobal::modify_param_move(Motion *motion, int narg, char **arg)
       motion->az = utils::numeric(FLERR, arg[3], false, lmp);
     }
 
+    if (dimension == 2)
+      if (motion->azflag && (motion->az != 0.0))
+        error->all(FLERR,"Fix_modify move cannot set wiggle z motion for 2d problem");
+
     motion->period = utils::numeric(FLERR, arg[7], false, lmp);
     if (motion->period <= 0.0) error->all(FLERR, "Illegal fix_modify move command");
     motion->omega = MY_2PI / motion->period;
@@ -1297,15 +1305,15 @@ int FixSurfaceGlobal::modify_param_move(Motion *motion, int narg, char **arg)
     motion->axis[0] = utils::numeric(FLERR,arg[4],false,lmp);
     motion->axis[1] = utils::numeric(FLERR,arg[5],false,lmp);
     motion->axis[2] = utils::numeric(FLERR,arg[6],false,lmp);
+    
     if (dimension == 2)
-      if (motion->mstyle == ROTATE && (motion->axis[0] != 0.0 || motion->axis[1] != 0.0))
+      if (motion->axis[0] != 0.0 || motion->axis[1] != 0.0)
         error->all(FLERR,"Fix_modify move cannot rotate around "
                    "non z-axis for 2d problem");
 
     motion->period = utils::numeric(FLERR,arg[7],false,lmp);
     if (motion->period <= 0.0) error->all(FLERR,"Illegal fix_modify move command");
 
-    motion->time_origin = update->ntimestep;
     motion->omega = MY_2PI / motion->period;
 
     // runit = unit vector along rotation axis
@@ -1337,15 +1345,18 @@ int FixSurfaceGlobal::modify_param_move(Motion *motion, int narg, char **arg)
     motion->axis[0] = utils::numeric(FLERR,arg[7],false,lmp);
     motion->axis[1] = utils::numeric(FLERR,arg[8],false,lmp);
     motion->axis[2] = utils::numeric(FLERR,arg[9],false,lmp);
-    if (dimension == 2)
-      if (motion->mstyle == ROTATE && (motion->axis[0] != 0.0 || motion->axis[1] != 0.0))
+
+    if (dimension == 2) {
+      if (motion->vzflag && (motion->vz != 0.0))
+        error->all(FLERR,"Fix_modify move cannot set linear z motion for 2d problem");
+      if (motion->axis[0] != 0.0 || motion->axis[1] != 0.0)
         error->all(FLERR,"Fix_modify move cannot rotate around "
                    "non z-axis for 2d problem");
+    }
 
     motion->period = utils::numeric(FLERR,arg[10],false,lmp);
     if (motion->period <= 0.0) error->all(FLERR,"Illegal fix_modify move command");
 
-    motion->time_origin = update->ntimestep;
     motion->omega = MY_2PI / motion->period;
 
     // runit = unit vector along rotation axis
@@ -1384,20 +1395,63 @@ void FixSurfaceGlobal::reset_dt()
 }
 
 /* ----------------------------------------------------------------------
-   memory usage of local atom-based array
+   memory usage per-surf data and neighbor list
 ------------------------------------------------------------------------- */
 
 double FixSurfaceGlobal::memory_usage()
 {
   double bytes = 0.0;
+
+  // points, lines, tris and connect2d/3d
+  
   bytes += npoints*sizeof(Point);
   if (dimension == 2) {
     bytes += nlines*sizeof(Line);
-    bytes = nlines*sizeof(Connect2d);
-  } else {
+    bytes += nlines*sizeof(Connect2d);
+  } else if (dimension == 3) {
     bytes += ntris*sizeof(Tri);
-    bytes = ntris*sizeof(Connect3d);
+    bytes += ntris*sizeof(Connect3d);
   }
+
+  bytes += memory->usage(xsurf,nsurf,3);
+  bytes += memory->usage(vsurf,nsurf,3);
+  bytes += memory->usage(omegasurf,nsurf,3);
+  bytes += memory->usage(radsurf,nsurf);
+
+  if (anymove) { 
+    bytes += memory->usage(points_lastneigh,npoints,3);
+    bytes += memory->usage(points_original,npoints,3);
+    bytes += memory->usage(xsurf_original,nsurf,3);
+    bytes += memory->usage(pointmove,nsurf);
+  }
+
+  if (mass_rigid) bytes += memory->usage(mass_rigid,atom->nmax);
+
+  if (imax) {
+    bytes += memory->usage(imflag,nsurf);
+    if (dimension == 2) bytes += memory->usage(imdata,nsurf,7);
+    else if (dimension == 3) bytes += memory->usage(imdata,nsurf,10);
+  }
+
+  // ragged connectivity arrays
+
+  if (dimension == 2) {
+    int np = 0;
+    for (int i = 0; i < nlines; i++) np += connect2d[i].np1 + connect2d[i].np2;
+    bytes += 4*np * sizeof(int);
+  } else if (dimension == 3) {
+    int ne = 0;
+    for (int i = 0; i < ntris; i++) ne += connect3d[i].ne1 + connect3d[i].ne2 + connect3d[i].ne3;
+    bytes += 4*ne * sizeof(int);
+    int nc = 0;
+    for (int i = 0; i < ntris; i++) nc += connect3d[i].nc1 + connect3d[i].nc2 + connect3d[i].nc3;
+    bytes += 2*nc * sizeof(int);
+  }
+
+  // neighbor list
+
+  bytes += list->memory_usage();
+  
   return bytes;
 }
 
@@ -1488,7 +1542,8 @@ int FixSurfaceGlobal::image(int *&ivec, double **&darray)
    identify unique points using hash
 ------------------------------------------------------------------------- */
 
-void FixSurfaceGlobal::extract_from_molecule(char *molID)
+void FixSurfaceGlobal::extract_from_molecule(char *molID,
+                                             std::map<std::tuple<double,double,double>,int> *hash)
 {
   int imol = atom->find_molecule(molID);
   if (imol == -1)
@@ -1631,7 +1686,8 @@ void FixSurfaceGlobal::extract_from_molecule(char *molID)
    identify unique points using hash
 ------------------------------------------------------------------------- */
 
-void FixSurfaceGlobal::extract_from_stlfile(char *filename, int stype)
+void FixSurfaceGlobal::extract_from_stlfile(char *filename, int stype,
+                                            std::map<std::tuple<double,double,double>,int> *hash)
 {
   if (dimension == 2)
     error->all(FLERR,"Fix surface/global cannot use an STL file for 2d simulations");
@@ -2801,6 +2857,160 @@ void FixSurfaceGlobal::move_rotate(int imotion, int i)
   }
 }
 
+/* -------------------------------------------------------------------------
+   rotate by right-hand rule around omega
+   add translation after rotation
+------------------------------------------------------------------------- */
+
+void FixSurfaceGlobal::move_transrotate(int imotion, int i)
+{
+  Motion *motion = &motions[imotion];
+
+  double time_origin = motion->time_origin;
+  double omega = motion->omega;
+  double *rpoint = motion->point;
+  double *runit = motion->unit;
+  
+  double delta = (update->ntimestep - time_origin) * dt;
+  double arg = omega * delta;
+  double cosine = cos(arg);
+  double sine = sin(arg);
+
+  int vxflag = motion->vxflag;
+  int vyflag = motion->vyflag;
+  int vzflag = motion->vzflag;
+  double vx = motion->vx;
+  double vy = motion->vy;
+  double vz = motion->vz;
+
+  // P = point = vector = point of rotation
+  // R = vector = axis of rotation
+  // w = omega of rotation (from period)
+  // X0 = xoriginal = initial coord of atom
+  // R0 = runit = unit vector for R
+  // D = X0 - P = vector from P to X0
+  // C = (D dot R0) R0 = projection of atom coord onto R line
+  // A = D - C = vector from R line to X0
+  // B = R0 cross A = vector perp to A in plane of rotation
+  // A,B define plane of circular rotation around R line
+  // X = P + C + A cos(w*dt) + B sin(w*dt)
+  // V = w R0 cross (A cos(w*dt) + B sin(w*dt))
+
+  // points - use of pointmove only moves a point once
+
+  int pindex;
+  double *pt;
+  
+  if (dimension == 2) {
+    pindex = lines[i].p1;
+    pt = points[pindex].x;
+    if (!pointmove[pindex]) {
+      move_rotate_point(pindex,rpoint,runit,cosine,sine);
+      if (vxflag) pt[0] += vx * delta;
+      if (vyflag) pt[1] += vy * delta;
+      pointmove[pindex] = 1;
+    }
+    pindex = lines[i].p2;
+    pt = points[pindex].x;
+    if (!pointmove[pindex]) {
+      move_rotate_point(pindex,rpoint,runit,cosine,sine);
+      if (vxflag) pt[0] += vx * delta;
+      if (vyflag) pt[1] += vy * delta;
+      pointmove[pindex] = 1;
+    }
+
+  } else {    
+    pindex = tris[i].p1;
+    pt = points[pindex].x;
+    if (!pointmove[pindex]) {
+      move_rotate_point(pindex,rpoint,runit,cosine,sine); 
+      if (vxflag) pt[0] += vx * delta;
+      if (vyflag) pt[1] += vy * delta;
+      if (vzflag) pt[2] += vz * delta;
+      pointmove[pindex] = 1;
+    }
+    pindex = tris[i].p2;
+    pt = points[pindex].x;
+    if (!pointmove[pindex]) {
+      move_rotate_point(pindex,rpoint,runit,cosine,sine);
+      if (vxflag) pt[0] += vx * delta;
+      if (vyflag) pt[1] += vy * delta;
+      if (vzflag) pt[2] += vz * delta;
+      pointmove[pindex] = 1;
+    }
+    pindex = tris[i].p3;
+    pt = points[pindex].x;
+    if (!pointmove[pindex]) {
+      move_rotate_point(pindex,rpoint,runit,cosine,sine);
+      if (vxflag) pt[0] += vx * delta;
+      if (vyflag) pt[1] += vy * delta;
+      if (vzflag) pt[2] += vz * delta;
+      pointmove[pindex] = 1;
+    }
+  }
+
+  // xsurf and vsurf
+  
+  double ddotr;
+  double a[3],b[3],c[3],d[3],disp[3];
+
+  d[0] = xsurf_original[i][0] - rpoint[0];
+  d[1] = xsurf_original[i][1] - rpoint[1];
+  d[2] = xsurf_original[i][2] - rpoint[2];
+  ddotr = d[0]*runit[0] + d[1]*runit[1] + d[2]*runit[2];
+  c[0] = ddotr*runit[0];
+  c[1] = ddotr*runit[1];
+  c[2] = ddotr*runit[2];
+  a[0] = d[0] - c[0];
+  a[1] = d[1] - c[1];
+  a[2] = d[2] - c[2];
+  b[0] = runit[1]*a[2] - runit[2]*a[1];
+  b[1] = runit[2]*a[0] - runit[0]*a[2];
+  b[2] = runit[0]*a[1] - runit[1]*a[0];
+  disp[0] = a[0]*cosine  + b[0]*sine;
+  disp[1] = a[1]*cosine  + b[1]*sine;
+  disp[2] = a[2]*cosine  + b[2]*sine;
+  
+  xsurf[i][0] = rpoint[0] + c[0] + disp[0];
+  xsurf[i][1] = rpoint[1] + c[1] + disp[1];
+  xsurf[i][2] = rpoint[2] + c[2] + disp[2];
+  vsurf[i][0] = omega * (runit[1]*disp[2] - runit[2]*disp[1]); + vxflag*vx;
+  vsurf[i][1] = omega * (runit[2]*disp[0] - runit[0]*disp[2]); + vyflag*vy;
+  vsurf[i][2] = omega * (runit[0]*disp[1] - runit[1]*disp[0]);
+
+  if (vxflag) xsurf[i][0] += vx*delta;
+  if (vyflag) xsurf[i][1] += vy*delta;
+  if (vzflag) xsurf[i][2] += vz*delta;
+  if (vxflag) vsurf[i][0] += vx;
+  if (vyflag) vsurf[i][1] += vy;
+  if (vzflag) vsurf[i][2] += vz;
+  
+  // normals
+
+  double p12[3],p13[3];
+  double *p1,*p2,*p3;
+
+  if (dimension == 2) {
+    double zunit[3] = {0.0,0.0,1.0};
+    p1 = points[lines[i].p1].x;
+    p2 = points[lines[i].p2].x;
+    MathExtra::sub3(p2,p1,p12);
+    MathExtra::cross3(zunit,p12,lines[i].norm);
+    MathExtra::norm3(lines[i].norm);
+    
+  } else {
+    p1 = points[tris[i].p1].x;
+    p2 = points[tris[i].p2].x;
+    p3 = points[tris[i].p3].x;
+    MathExtra::sub3(p1,p2,p12);
+    MathExtra::sub3(p1,p3,p13);
+    MathExtra::cross3(p12,p13,tris[i].norm);
+    MathExtra::norm3(tris[i].norm);
+  }
+}
+
+/* -------------------------------------------------------------------------
+   rotate point I by right-hand rule around omega
 /* ------------------------------------------------------------------------- */
 
 void FixSurfaceGlobal::move_rotate_point(int i, double *rpoint, double *runit,
@@ -2831,3 +3041,4 @@ void FixSurfaceGlobal::move_rotate_point(int i, double *rpoint, double *runit,
   pt[1] = rpoint[1] + c[1] + disp[1];
   pt[2] = rpoint[2] + c[2] + disp[2];
 }
+
