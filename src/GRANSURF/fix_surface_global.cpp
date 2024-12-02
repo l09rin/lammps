@@ -14,7 +14,6 @@
 
 // NOTE: allow for multiple instances of this fix or not ?
 // NOTE: need to order connections with FLAT first?
-// NOTE: error checks for zero-length lines, duplicate lines
 // NOTE: warn for too-small lines
 // NOTE: more efficient neighbor lists, see Joel's 18 Nov email for ideas
 // NOTE: alter connection info if 2 lines/tris are different types ?
@@ -25,7 +24,7 @@
 // NOTE: enable fix move transrotate and variable styles ?
 // NOTE: what about reduced vs box units in fix_modify move params like fix_move ?
 // NOTE: what about PBC
-//       connecntion finding, for moving surfs, surfs which overlap PBC
+//       connection finding, for moving surfs, surfs which overlap PBC
 //       how is this handled for local surfs
 // NOTE: init motion all instance values to zero when allocate it for first time ?
 // NOTE: could allow non-assignment of type pairs
@@ -360,11 +359,16 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
   
   surface_attributes();
 
+  // error checks on duplicate surfs or zero-size surfs
+
+  if (dimension == 2) check2d();
+  else check3d();
+  
   // compute connectivity of triangles/lines
   // create Connect3d or Connect2d data structs 
   
-  if (dimension == 2) connectivity2d_global();
-  else connectivity3d_global();
+  if (dimension == 2) connectivity2d();
+  else connectivity3d();
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1702,11 +1706,120 @@ void FixSurfaceGlobal::extract_from_stlfile(char *filename, int stype)
 }
 
 /* ----------------------------------------------------------------------
+   error checks on lines
+   no zero-length lines and no duplicate lines
+------------------------------------------------------------------------- */
+
+void FixSurfaceGlobal::check2d()
+{
+  // check for zero length lines
+  // use coords of points, not indices
+  // since (p1,p2) can be zero-length even if p1 != p2
+  
+  double *pt1,*pt2;
+  
+  int flag = 0;
+  for (int i = 0; i < nlines; i++) {
+    pt1 = points[lines[i].p1].x;
+    pt2 = points[lines[i].p2].x;
+    if (pt1[0] == pt2[0] && pt1[1] == pt2[1]) flag++;
+  }
+
+  if (flag)
+    error->all(FLERR,fmt::format("Fix surface/global defines {} zero-length lines",flag));
+
+  // check for duplicate lines
+  // (p1,p2) is duplicate of any line with same 2 endpoints
+  // hash = map of lines
+  //   key = <p1,p2> indices of 2 points
+  //   value = 1 if already appeared
+
+  int p1,p2;
+  std::map<std::tuple<int,int>,int> hash;
+
+  flag = 0;
+  for (int i = 0; i < nlines; i++) {
+    p1 = lines[i].p1;
+    p2 = lines[i].p2;
+
+    auto key1 = std::make_tuple(p1,p2);
+    auto key2 = std::make_tuple(p2,p1);
+
+    if (hash.find(key1) == hash.end() && hash.find(key2) == hash.end()) hash[key1] = 1;
+    else flag++;
+  }
+
+  if (flag)
+    error->all(FLERR,fmt::format("Fix surface/global defines {} duplicate lines",flag));
+}
+
+
+/* ----------------------------------------------------------------------
+   error checks on tris
+   no tris with a zero-length edge
+   no duplicate tris
+------------------------------------------------------------------------- */
+
+void FixSurfaceGlobal::check3d()
+{
+  // check for zero length tri edges
+  // use coords of points, not indices
+  // since (p1,p2) can be zero-length even if p1 != p2
+  
+  double *pt1,*pt2,*pt3;
+  
+  int flag = 0;
+  for (int i = 0; i < ntris; i++) {
+    pt1 = points[tris[i].p1].x;
+    pt2 = points[tris[i].p2].x;
+    pt3 = points[tris[i].p3].x;
+
+    if (pt1[0] == pt2[0] && pt1[1] == pt2[1]) flag++;
+    if (pt2[0] == pt3[0] && pt2[1] == pt3[1]) flag++;
+    if (pt3[0] == pt1[0] && pt3[1] == pt1[1]) flag++;
+  }
+
+  if (flag)
+    error->all(FLERR,fmt::format("Fix surface/global defines {} zero-length triangle edges",flag));
+
+  // check for duplicate tris
+  // (p1,p2,p3) of any tri with same 3 corner points
+  // hash = map of tris
+  //   key = <p1,p2,p3> indices of 3 points
+  //   value = 1 if already appeared
+
+  int p1,p2,p3;
+  std::map<std::tuple<int,int,int>,int> hash;
+
+  flag = 0;
+  for (int i = 0; i < ntris; i++) {
+    p1 = lines[i].p1;
+    p2 = lines[i].p2;
+    p3 = lines[i].p2;
+
+    auto key1 = std::make_tuple(p1,p2,p3);
+    auto key2 = std::make_tuple(p1,p3,p2);
+    auto key3 = std::make_tuple(p2,p1,p3);
+    auto key4 = std::make_tuple(p2,p3,p1);
+    auto key5 = std::make_tuple(p3,p1,p2);
+    auto key6 = std::make_tuple(p3,p2,p1);
+
+    if (hash.find(key1) == hash.end() && hash.find(key2) == hash.end() &&
+        hash.find(key3) == hash.end() && hash.find(key4) == hash.end() &&
+        hash.find(key5) == hash.end() && hash.find(key6) == hash.end()) hash[key1] = 1;
+    else flag++;
+  }
+
+  if (flag)
+    error->all(FLERR,fmt::format("Fix surface/global defines {} duplicate triangles",flag));
+}
+
+/* ----------------------------------------------------------------------
    create and initialize Connect2d info for all lines
    this creates plines and connect2d data structs
 ------------------------------------------------------------------------- */
 
-void FixSurfaceGlobal::connectivity2d_global()
+void FixSurfaceGlobal::connectivity2d()
 {
   connect2d = (Connect2d *)
     memory->smalloc(nlines*sizeof(Connect2d),
@@ -1882,7 +1995,7 @@ void FixSurfaceGlobal::connectivity2d_global()
    this creates etris/ctris and connect3d data structs
 ------------------------------------------------------------------------- */
 
-void FixSurfaceGlobal::connectivity3d_global()
+void FixSurfaceGlobal::connectivity3d()
 {
   int p1,p2,p3;
 
@@ -2215,7 +2328,7 @@ void FixSurfaceGlobal::connectivity3d_global()
       
   // setup tri corner point connectivity lists
   // count # of tris containing each corner point (including self)
-  // ctris =  ragged 2d array with indices of tris which contain each point
+  // ctris = ragged 2d array with indices of tris which contain each point
 
   memory->create(counts,npoints,"surface/global:counts");
 
@@ -2239,7 +2352,7 @@ void FixSurfaceGlobal::connectivity3d_global()
 
   // allocate all ragged corner arrays which Connect2d will point to
   // first subtract self from each point's count
-  //   b/c connect2d vectors will NOT include self
+  //   b/c connect3d vectors will NOT include self
 
   for (int i = 0; i < npoints; i++) counts[i]--;
 

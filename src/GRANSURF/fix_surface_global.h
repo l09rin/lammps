@@ -279,8 +279,10 @@ class FixSurfaceGlobal : public Fix {
 
   void extract_from_molecule(char *);
   void extract_from_stlfile(char *, int);
-  void connectivity2d_global();
-  void connectivity3d_global();
+  void check2d();
+  void check3d();
+  void connectivity2d();
+  void connectivity3d();
   void surface_attributes();
     
   int modify_param_move(Motion *, int, char **);
