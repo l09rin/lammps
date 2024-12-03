@@ -757,7 +757,7 @@ void FixSurfaceGlobal::post_force(int vflag)
   double dr[3],contact[3],ds[3],vs[3],*forces,*torquesi;
   double *history,*allhistory,**firsthistory;
 
-  double dot, max_overlap, norm, *knorm;
+  double dot, overlap, max_overlap, norm, *knorm;
   int it, jjtmp, connection_type, aflag, endpt_flag;
   std::unordered_set<int> *processed_contacts = new std::unordered_set<int>();
   std::map<int, int> *contacts_map = new std::map<int, int>();
@@ -1010,26 +1010,9 @@ void FixSurfaceGlobal::post_force(int vflag)
 
       // Apply force
 
-      max_overlap = 0.0;
-      for (it = 0; it < force_surfs->size(); it++) {
-        m = (*force_surfs)[it];
-        model->xj[0] += contact_surfs[m].r[0] * contact_surfs[m].overlap;
-        model->xj[1] += contact_surfs[m].r[1] * contact_surfs[m].overlap;
-        model->xj[2] += contact_surfs[m].r[2] * contact_surfs[m].overlap;
-        max_overlap = MAX(max_overlap, contact_surfs[m].overlap);
+      // Average geometry
 
-        norm += contact_surfs[m].overlap * contact_surfs[m].overlap;
-      }
-
-      norm = max_overlap / norm;
-      model->xj[0] *= norm;
-      model->xj[1] *= norm;
-      model->xj[2] *= norm;
-
-      if (use_history) model->touch = touch[jj];
-
-      // guaranteed in contact, but need to calculate intermediate variables
-      touch_flag = model->check_contact();
+      // TODO correct velocity, from before:
 
       //ds[0] = contact[0] - xsurf[j][0];
       //ds[1] = contact[1] - xsurf[j][1];
@@ -1041,6 +1024,43 @@ void FixSurfaceGlobal::post_force(int vflag)
 
       //model->vj = vs;
       //model->omegaj = omegasurf[j];
+
+      if (force_surfs->size() != 1) {
+        norm = 0.0;
+        max_overlap = 0.0;
+        for (it = 0; it < force_surfs->size(); it++) {
+          m = (*force_surfs)[it];
+          overlap = contact_surfs[m].overlap;
+          max_overlap = MAX(max_overlap, overlap);
+          norm += overlap * overlap;
+
+          for (k = 0; k < 3; k++) {
+            model->xj[k] += contact_surfs[m].r[k] *overlap;
+            model->vj[k] += vsurf[contact_surfs[m].index][k] * overlap;
+            model->omegaj[k] += omegasurf[contact_surfs[m].index][k] * overlap;
+          }
+        }
+
+        norm = 1.0 / norm;
+        for (k = 0; k < 3; k++) {
+          model->xj[k] = model->xi[k] - model->xj[k] * max_overlap * norm;
+          model->vj[k] *= norm;
+          model->omegaj[k] *= norm;
+        }
+      } else {
+        m = (*force_surfs)[0];
+        overlap = contact_surfs[m].overlap;
+        for (k = 0; k < 3; k++) {
+          model->xj[k] = model->xi[k] - contact_surfs[m].r[k] *overlap;
+          model->vj[k] = vsurf[contact_surfs[m].index][k] * overlap;
+          model->omegaj[k] = omegasurf[contact_surfs[m].index][k] * overlap;
+        }
+      }
+
+      if (use_history) model->touch = touch[jj];
+
+      // guaranteed in contact, but need to calculate intermediate variables
+      touch_flag = model->check_contact();
 
       if (use_history) {
         jj = contact_surfs[n].neigh_index;
