@@ -765,8 +765,8 @@ void FixSurfaceGlobal::post_force(int vflag)
   int connection_type, aflag, endpt_flag;
   std::unordered_set<int> *processed_contacts =
     new std::unordered_set<int>();
-  std::unordered_set<int> *current_contacts =
-    new std::unordered_set<int>();
+  std::map<int, int> *contacts_map =
+    new std::map<int, int>();
 
   model->history_update = 1;
   if (update->setupflag) model->history_update = 0;
@@ -841,7 +841,6 @@ void FixSurfaceGlobal::post_force(int vflag)
     }
 
     n_contact_surfs = 0;
-    current_contacts->clear();
     for (jj = 0; jj < jnum; jj++) {
       j = jlist[jj];
 
@@ -914,7 +913,6 @@ void FixSurfaceGlobal::post_force(int vflag)
       }
 
       if (dimension == 2) {
-        current_contacts->insert(j);
         contact_surfs[n_contact_surfs].index = j;
         contact_surfs[n_contact_surfs].type = lines[j].type;
         contact_surfs[n_contact_surfs].jflag = jflag;
@@ -930,6 +928,10 @@ void FixSurfaceGlobal::post_force(int vflag)
     // reduce set of contacts
 
     std::sort(contact_surfs, contact_surfs + n_contact_surfs, [](ContactSurf a, ContactSurf b) {return a.overlap > b.overlap;});
+
+    contacts_map->clear();
+    for (n = 0; n < n_contact_surfs; n++)
+      (*contacts_map)[contact_surfs[n].index] = n;
 
     n_contact_forces = -1;
     processed_contacts->clear();
@@ -968,7 +970,7 @@ void FixSurfaceGlobal::post_force(int vflag)
           }
 
           // Skip if not in contact
-          if (current_contacts->find(k) != current_contacts->end())
+          if (contacts_map->find(k) != contacts_map->end())
             continue;
 
           // Skip if processed
@@ -993,7 +995,7 @@ void FixSurfaceGlobal::post_force(int vflag)
           // TODO: confirm how to handle multiple types
           if (connection_type == FLAT && contact_surfs[n].type == lines[k].type) {
             // recursively walk same-type flat contacts to average geometry
-            walk_flat_connections2d(k, processed_contacts, current_contacts, &contact_forces[n_contact_forces]);
+            walk_flat_connections2d(k, processed_contacts, contacts_map, &contact_forces[n_contact_forces]);
           } else if (connection_type == CONVEX) {
             // skip convex surfaces, farther from original
             processed_contacts->insert(k);
@@ -1093,7 +1095,7 @@ void FixSurfaceGlobal::post_force(int vflag)
   }
 
   delete processed_contacts;
-  delete current_contacts;
+  delete contacts_map;
 }
 
 /* ----------------------------------------------------------------------
@@ -3106,17 +3108,12 @@ void FixSurfaceGlobal::move_rotate_point(int i, double *rpoint, double *runit,
 ------------------------------------------------------------------------- */
 
 void FixSurfaceGlobal::walk_flat_connections2d(int j, std::unordered_set<int>
-					 *processed_contacts, std::unordered_set<int>
-					 *current_contacts, ContactForce *contact_force)
+					 *processed_contacts, std::map<int, int>
+					 *contacts_map, ContactForce *contact_force)
 {
   // Find geometry of current flat surf and process
-  int n;
   processed_contacts->insert(j);
-  for (n = 0; n < nmax_contact_surfs; n++)
-    if (contact_surfs[n].index == j) break;
-
-  if (n == nmax_contact_forces)
-    error->one(FLERR, "Failed to find contacting surface");
+  int n = (*contacts_map)[j];
 
   contact_force->nsurfs += 1;
   contact_force->overlap = MAX(contact_force->overlap, contact_surfs[n].overlap);
@@ -3136,7 +3133,7 @@ void FixSurfaceGlobal::walk_flat_connections2d(int j, std::unordered_set<int>
     }
 
     // Skip if not in contact
-    if (current_contacts->find(k) != current_contacts->end())
+    if (contacts_map->find(k) != contacts_map->end())
       continue;
 
     // Skip if processed
@@ -3145,6 +3142,6 @@ void FixSurfaceGlobal::walk_flat_connections2d(int j, std::unordered_set<int>
 
     // Walk if flat, otherwise process later
     if (aflag == FLAT)
-      walk_flat_connections2d(k, processed_contacts, current_contacts, contact_force);
+      walk_flat_connections2d(k, processed_contacts, contacts_map, contact_force);
   }
 }

@@ -282,7 +282,7 @@ class FixSurfaceGlobal : public Fix {
   void connectivity3d();
   void surface_attributes();
 
-  void walk_flat_connections2d(int, std::unordered_set<int> *, std::unordered_set<int> *, ContactForce *);
+  void walk_flat_connections2d(int, std::unordered_set<int> *, std::map<int, int> *, ContactForce *);
 
   int modify_param_move(Motion *, int, char **);
 
