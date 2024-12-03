@@ -769,6 +769,7 @@ void FixSurfaceGlobal::post_force(int vflag)
     new std::map<int, int>();
 
   model->history_update = 1;
+  model->radj = 0.0;
   if (update->setupflag) model->history_update = 0;
 
   // if just reneighbored:
@@ -833,6 +834,13 @@ void FixSurfaceGlobal::post_force(int vflag)
     model->radi = radius[i];
     model->vi = v[i];
     model->omegai = omega[i];
+    if (heat_flag) model->Ti = temperature[i];
+
+    // if I is part of rigid body, use body mass
+    meff = rmass[i];
+    if (fix_rigid && mass_rigid[i] > 0.0) meff = mass_rigid[i];
+    model->meff = meff;
+
     jlist = firstneigh[i];
     jnum = numneigh[i];
     if (use_history) {
@@ -843,6 +851,11 @@ void FixSurfaceGlobal::post_force(int vflag)
     n_contact_surfs = 0;
     for (jj = 0; jj < jnum; jj++) {
       j = jlist[jj];
+
+      // TODO maybe not necessary
+      factor_lj = special_lj[sbmask(j)];
+      j &= NEIGHMASK;
+      if (factor_lj == 0) continue;
 
       delx = xtmp - xsurf[j][0];
       dely = xtmp - xsurf[j][1];
@@ -1013,70 +1026,45 @@ void FixSurfaceGlobal::post_force(int vflag)
       }
     }
 
-    /*
-    For contact in reduced contacts:
-      // reset model and copy initial geometric data
+    // calculate forces
 
-      factor_lj = special_lj[sbmask(j)]; // presumably not necessary
-      j &= NEIGHMASK;
+    for (n = 0; n < n_contact_forces; n++) {
+      // Average flat contact geometries, if applicable
+      if (contact_forces[n].nsurfs != 1) {
+        contact_forces[n].r[0] / contact_forces[n].nsurfs;
+        contact_forces[n].r[1] / contact_forces[n].nsurfs;
+        contact_forces[n].r[2] / contact_forces[n].nsurfs;
+      }
 
-      if (factor_lj == 0) continue;
-
-      model->xj = xsurf[j];
-      model->radj = radsurf[j];
+      model->xj[0] = xtmp - contact_forces[n].r[0];
+      model->xj[1] = xtmp - contact_forces[n].r[1];
+      model->xj[2] = xtmp - contact_forces[n].r[2];
+      //model->radj = 0; // TODO, what effective radius do we want? Currently 0.0,
       if (use_history) model->touch = touch[jj];
 
-      // unset non-touching neighbors
-      // NOTE: in pair_surf_granular, this unsetting occurs twice ?
-      // NOTE: maybe it should only be below, after call to overlap() methods ?
-
+      // guaranteed to be in contact, but need to calculate intermediate variables
       touch_flag = model->check_contact();
 
-      if (!touch_flag) {
-        if (use_history) {
-          touch[jj] = 0;
-          history = &allhistory[size_history * jj];
-          for (k = 0; k < size_history; k++) history[k] = 0.0;
-        }
-        continue;
-      }
+      // TODO average velocity of surfs
 
-      rsq = model->rsq;
+      //ds[0] = contact[0] - xsurf[j][0];
+      //ds[1] = contact[1] - xsurf[j][1];
+      //ds[2] = contact[2] - xsurf[j][2];
 
-      // meff = effective mass of sphere
-      // if I is part of rigid body, use body mass
+      //vs[0] = vsurf[j][0] + (omegasurf[j][1] * ds[2] - omegasurf[j][2] * ds[1]);
+      //vs[1] = vsurf[j][1] + (omegasurf[j][2] * ds[0] - omegasurf[j][0] * ds[2]);
+      //vs[2] = vsurf[j][2] + (omegasurf[j][0] * ds[1] - omegasurf[j][1] * ds[0]);
 
-      meff = rmass[i];
-      if (fix_rigid && mass_rigid[i] > 0.0) meff = mass_rigid[i];
+      //model->vj = vs;
+      //model->omegaj = omegasurf[j];
 
-      // copy additional information and prepare force calculations
+      // TODO handle history
 
-      model->meff = meff;
-
-      ds[0] = contact[0] - xsurf[j][0];
-      ds[1] = contact[1] - xsurf[j][1];
-      ds[2] = contact[2] - xsurf[j][2];
-
-      vs[0] = vsurf[j][0] + (omegasurf[j][1] * ds[2] - omegasurf[j][2] * ds[1]);
-      vs[1] = vsurf[j][1] + (omegasurf[j][2] * ds[0] - omegasurf[j][0] * ds[2]);
-      vs[2] = vsurf[j][2] + (omegasurf[j][0] * ds[1] - omegasurf[j][1] * ds[0]);
-
-      model->vj = vs;
-      model->omegaj = omegasurf[j];
-
-      if (heat_flag) model->Ti = temperature[i];
-
-      // pairwise interaction between sphere and surface element
-
-      if (use_history) {
-        touch[jj] = 1;
-        history = &allhistory[3*jj];
-        model->history = history;
-      }
-
-      model->dx[0] = dr[0];
-      model->dx[1] = dr[1];
-      model->dx[2] = dr[2];
+      //if (use_history) {
+      //  touch[jj] = 1;
+      //  history = &allhistory[3*jj];
+      //  model->history = history;
+      //}
 
       // need to add support coupled contacts
       // is this just multiplying forces (+torques?) by factor_couple?
@@ -1091,7 +1079,7 @@ void FixSurfaceGlobal::post_force(int vflag)
       add3(f[i], forces, f[i]);
       add3(torque[i], torquesi, torque[i]);
       if (heat_flag) heatflow[i] += model->dq;
-    */
+    }
   }
 
   delete processed_contacts;
