@@ -153,7 +153,6 @@ class FixSurfaceGlobal : public Fix {
 
   // ragged 2d arrays for 2d connectivity
 
-  int **plines;               // indices of lines which contain each end point
   int **neigh_p1;             // indices of other lines connected to endpt 1
   int **pwhich_p1;            // which point (0/1) on other line is endpt 1
   int **nside_p1;             // consistency of other line normal
@@ -167,7 +166,6 @@ class FixSurfaceGlobal : public Fix {
 
   // ragged 2d arrays for 3d edge connectivity
 
-  int **etris;                // indices of tris which contain each edge
   int **neigh_e1;             // indices of other tris connected to edge 1
   int **ewhich_e1;            // which edge (0/1/2) on other tri is edge 1
   int **nside_e1;             // consistency of other line normal
@@ -185,7 +183,6 @@ class FixSurfaceGlobal : public Fix {
 
   // ragged 2d arrays for 3d corner connectivity
 
-  int **ctris;                // indices of tris which contain each corner point
   int **neigh_c1;             // indices of other tris connected to cpt 1
   int **cwhich_c1;            // which corner point (0/1/2) on other tri is cpt 1
   int **neigh_c2;             // indices of other tris connected to cpt 21

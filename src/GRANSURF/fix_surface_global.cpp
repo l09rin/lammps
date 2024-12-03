@@ -853,9 +853,10 @@ void FixSurfaceGlobal::post_force(int vflag)
       j = jlist[jj];
 
       // TODO maybe not necessary
-      factor_lj = special_lj[sbmask(j)];
+      // NOTE to Joel - these 2 lines do not compile
+      //factor_lj = special_lj[sbmask(j)];
       j &= NEIGHMASK;
-      if (factor_lj == 0) continue;
+      //if (factor_lj == 0) continue;
 
       delx = xtmp - xsurf[j][0];
       dely = xtmp - xsurf[j][1];
@@ -1930,7 +1931,7 @@ void FixSurfaceGlobal::connectivity2d()
                     "surface/global:connect2d");
 
   // setup line end point connectivity lists
-  // count # of lines containing each end point (including self)
+  // counts = # of lines containing each end point (including self)
   // plines = ragged 2d array with indices of lines which contain each point
 
   int *counts;
@@ -1943,6 +1944,7 @@ void FixSurfaceGlobal::connectivity2d()
     counts[lines[i].p2]++;
   }
 
+  int **plines;
   memory->create_ragged(plines,npoints,counts,"surface/global:plines");
 
   for (int i = 0; i < npoints; i++) counts[i] = 0;
@@ -1952,48 +1954,56 @@ void FixSurfaceGlobal::connectivity2d()
     plines[lines[i].p2][counts[lines[i].p2]++] = i;
   }
 
+  // p1/p2_counts = # of lines connecting to endpoints p1/p2 of each line
+  // do NOT include self
+
+  int *p1_counts,*p2_counts;
+  memory->create(p1_counts,nlines,"surface/global:p1_counts");
+  memory->create(p2_counts,nlines,"surface/global:p2_counts");
+
+  for (int i = 0; i < nlines; i++) {
+    p1_counts[i] = counts[lines[i].p1] - 1;
+    p2_counts[i] = counts[lines[i].p2] - 1;
+  }
+  
   // allocate all ragged arrays which Connect2d will point to
-  // first subtract self from each point's count
-  //   b/c connect3d vectors will NOT include self
 
-  for (int i = 0; i < npoints; i++) counts[i]--;
-
-  memory->create_ragged(neigh_p1,npoints,counts,"surface/global:neigh_p1");
-  memory->create_ragged(neigh_p2,npoints,counts,"surface/global:neigh_p2");
-  memory->create_ragged(pwhich_p1,npoints,counts,"surface/global:pwhich_p1");
-  memory->create_ragged(pwhich_p2,npoints,counts,"surface/global:pwhich_p2");
-  memory->create_ragged(nside_p1,npoints,counts,"surface/global:nside_p1");
-  memory->create_ragged(nside_p2,npoints,counts,"surface/global:nside_p2");
-  memory->create_ragged(aflag_p1,npoints,counts,"surface/global:aflag_p1");
-  memory->create_ragged(aflag_p2,npoints,counts,"surface/global:aflag_p2");
+  memory->create_ragged(neigh_p1,nlines,p1_counts,"surface/global:neigh_p1");
+  memory->create_ragged(neigh_p2,nlines,p2_counts,"surface/global:neigh_p2");
+  memory->create_ragged(pwhich_p1,nlines,p1_counts,"surface/global:pwhich_p1");
+  memory->create_ragged(pwhich_p2,nlines,p2_counts,"surface/global:pwhich_p2");
+  memory->create_ragged(nside_p1,nlines,p1_counts,"surface/global:nside_p1");
+  memory->create_ragged(nside_p2,nlines,p2_counts,"surface/global:nside_p2");
+  memory->create_ragged(aflag_p1,nlines,p1_counts,"surface/global:aflag_p1");
+  memory->create_ragged(aflag_p2,nlines,p2_counts,"surface/global:aflag_p2");
 
   // set connect2d vector ptrs to rows of corresponding ragged arrays
 
   for (int i = 0; i < nlines; i++) {
-    connect2d[i].np1 = counts[lines[i].p1];
+    connect2d[i].np1 = p1_counts[i];
     if (connect2d[i].np1 == 0) {
       connect2d[i].neigh_p1 = nullptr;
       connect2d[i].pwhich_p1 = nullptr;
       connect2d[i].nside_p1 = nullptr;
       connect2d[i].aflag_p1 = nullptr;
     } else {
-      connect2d[i].neigh_p1 = neigh_p1[lines[i].p1];
-      connect2d[i].pwhich_p1 = pwhich_p1[lines[i].p1];
-      connect2d[i].nside_p1 = nside_p1[lines[i].p1];
-      connect2d[i].aflag_p1 = aflag_p1[lines[i].p1];
+      connect2d[i].neigh_p1 = neigh_p1[i];
+      connect2d[i].pwhich_p1 = pwhich_p1[i];
+      connect2d[i].nside_p1 = nside_p1[i];
+      connect2d[i].aflag_p1 = aflag_p1[i];
     }
 
-    connect2d[i].np2 = counts[lines[i].p2];
+    connect2d[i].np2 = p2_counts[i];
     if (connect2d[i].np2 == 0) {
       connect2d[i].neigh_p2 = nullptr;
       connect2d[i].pwhich_p2 = nullptr;
       connect2d[i].nside_p2 = nullptr;
       connect2d[i].aflag_p2 = nullptr;
     } else {
-      connect2d[i].neigh_p2 = neigh_p2[lines[i].p2];
-      connect2d[i].pwhich_p2 = pwhich_p2[lines[i].p2];
-      connect2d[i].nside_p2 = nside_p2[lines[i].p2];
-      connect2d[i].aflag_p2 = aflag_p2[lines[i].p2];
+      connect2d[i].neigh_p2 = neigh_p2[i];
+      connect2d[i].pwhich_p2 = pwhich_p2[i];
+      connect2d[i].nside_p2 = nside_p2[i];
+      connect2d[i].aflag_p2 = aflag_p2[i];
     }
   }
 
@@ -2005,7 +2015,7 @@ void FixSurfaceGlobal::connectivity2d()
   for (int i = 0; i < nlines; i++) {
     if (connect2d[i].np1) {
       j = 0;
-      for (m = 0; m <= connect2d[i].np1; m++) {
+      for (m = 0; m < counts[lines[i].p1]; m++) {
         if (plines[lines[i].p1][m] == i) continue;
         connect2d[i].neigh_p1[j] = plines[lines[i].p1][m];
         j++;
@@ -2013,7 +2023,7 @@ void FixSurfaceGlobal::connectivity2d()
     }
     if (connect2d[i].np2) {
       j = 0;
-      for (m = 0; m <= connect2d[i].np2; m++) {
+      for (m = 0; m < counts[lines[i].p2]; m++) {
         if (plines[lines[i].p2][m] == i) continue;
         connect2d[i].neigh_p2[j] = plines[lines[i].p2][m];
         j++;
@@ -2021,10 +2031,12 @@ void FixSurfaceGlobal::connectivity2d()
     }
   }
 
-  // deallocate counts and plines
+  // deallocate counts, plines, p12_counts
 
   memory->destroy(counts);
   memory->destroy(plines);
+  memory->destroy(p1_counts);
+  memory->destroy(p2_counts);
 
   // set connect2d pwhich/nside/aflag for each end point of each line
   // see fsg.h file for an explanation of each vector in Connect2d
@@ -2159,7 +2171,7 @@ void FixSurfaceGlobal::connectivity3d()
   }
 
   // setup tri edge connectivity lists
-  // count # of tris containing each edge (including self)
+  // counts = # of tris containing each edge (including self)
   // etris = ragged 2d array with indices of tris which contain each edge
 
   int *counts;
@@ -2173,6 +2185,7 @@ void FixSurfaceGlobal::connectivity3d()
     counts[tri2edge[i][2]]++;
   }
 
+  int **etris;
   memory->create_ragged(etris,nedges,counts,"surface/global:etris");
 
   for (int i = 0; i < nedges; i++) counts[i] = 0;
@@ -2183,65 +2196,75 @@ void FixSurfaceGlobal::connectivity3d()
     etris[tri2edge[i][2]][counts[tri2edge[i][2]]++] = i;
   }
 
-  // allocate all edge ragged arrays which Connect3d will point to
-  // first subtract self from each edge's count
-  //   b/c connect3d vectors will NOT include self
+  // e1/e2/e3_counts = # of edges connecting to edges e1/e2/e3 of each tri
+  // do NOT include self
 
-  for (int i = 0; i < nedges; i++) counts[i]--;
-
-  memory->create_ragged(neigh_e1,nedges,counts,"surface/global:neigh_e1");
-  memory->create_ragged(neigh_e2,nedges,counts,"surface/global:neigh_e2");
-  memory->create_ragged(neigh_e3,nedges,counts,"surface/global:neigh_e3");
-  memory->create_ragged(ewhich_e1,nedges,counts,"surface/global:ewhich_e1");
-  memory->create_ragged(ewhich_e2,nedges,counts,"surface/global:ewhich_e2");
-  memory->create_ragged(ewhich_e3,nedges,counts,"surface/global:ewhich_e3");
-  memory->create_ragged(nside_e1,nedges,counts,"surface/global:nside_e1");
-  memory->create_ragged(nside_e2,nedges,counts,"surface/global:nside_e2");
-  memory->create_ragged(nside_e3,nedges,counts,"surface/global:nside_e3");
-  memory->create_ragged(aflag_e1,nedges,counts,"surface/global:aflag_e1");
-  memory->create_ragged(aflag_e2,nedges,counts,"surface/global:aflag_e2");
-  memory->create_ragged(aflag_e3,nedges,counts,"surface/global:aflag_e3");
-
-  // set connect3d edge vector ptrs to rows of corresponding ragged arrays
+  int *e1_counts,*e2_counts,*e3_counts;
+  memory->create(e1_counts,ntris,"surface/global:e1_counts");
+  memory->create(e2_counts,ntris,"surface/global:e2_counts");
+  memory->create(e3_counts,ntris,"surface/global:e3_counts");
 
   for (int i = 0; i < ntris; i++) {
-    connect3d[i].ne1 = counts[tri2edge[i][0]];
+    e1_counts[i] = counts[tri2edge[i][0]] - 1;
+    e2_counts[i] = counts[tri2edge[i][1]] - 1;
+    e3_counts[i] = counts[tri2edge[i][2]] - 1;
+  }
+  
+  // allocate all edge ragged arrays which Connect3d will point to
+
+  memory->create_ragged(neigh_e1,ntris,e1_counts,"surface/global:neigh_e1");
+  memory->create_ragged(neigh_e2,ntris,e2_counts,"surface/global:neigh_e2");
+  memory->create_ragged(neigh_e3,ntris,e3_counts,"surface/global:neigh_e3");
+  memory->create_ragged(ewhich_e1,ntris,e1_counts,"surface/global:ewhich_e1");
+  memory->create_ragged(ewhich_e2,ntris,e2_counts,"surface/global:ewhich_e2");
+  memory->create_ragged(ewhich_e3,ntris,e3_counts,"surface/global:ewhich_e3");
+  memory->create_ragged(nside_e1,ntris,e1_counts,"surface/global:nside_e1");
+  memory->create_ragged(nside_e2,ntris,e2_counts,"surface/global:nside_e2");
+  memory->create_ragged(nside_e3,ntris,e3_counts,"surface/global:nside_e3");
+  memory->create_ragged(aflag_e1,ntris,e1_counts,"surface/global:aflag_e1");
+  memory->create_ragged(aflag_e2,ntris,e2_counts,"surface/global:aflag_e2");
+  memory->create_ragged(aflag_e3,ntris,e3_counts,"surface/global:aflag_e3");
+
+  // set connect3d edge vector ptrs to rows of corresponding edge ragged arrays
+
+  for (int i = 0; i < ntris; i++) {
+    connect3d[i].ne1 = e1_counts[i];
     if (connect3d[i].ne1 == 0) {
       connect3d[i].neigh_e1 = nullptr;
       connect3d[i].ewhich_e1 = nullptr;
       connect3d[i].nside_e1 = nullptr;
       connect3d[i].aflag_e1 = nullptr;
     } else {
-      connect3d[i].neigh_e1 = neigh_e1[tri2edge[i][0]];
-      connect3d[i].ewhich_e1 = ewhich_e1[tri2edge[i][0]];
-      connect3d[i].nside_e1 = nside_e1[tri2edge[i][0]];
-      connect3d[i].aflag_e1 = aflag_e1[tri2edge[i][0]];
+      connect3d[i].neigh_e1 = neigh_e1[i];
+      connect3d[i].ewhich_e1 = ewhich_e1[i];
+      connect3d[i].nside_e1 = nside_e1[i];
+      connect3d[i].aflag_e1 = aflag_e1[i];
     }
 
-    connect3d[i].ne2 = counts[tri2edge[i][1]];
+    connect3d[i].ne2 = e2_counts[i];
     if (connect3d[i].ne2 == 0) {
       connect3d[i].neigh_e2 = nullptr;
       connect3d[i].ewhich_e2 = nullptr;
       connect3d[i].nside_e2 = nullptr;
       connect3d[i].aflag_e2 = nullptr;
     } else {
-      connect3d[i].neigh_e2 = neigh_e2[tri2edge[i][1]];
-      connect3d[i].ewhich_e2 = ewhich_e2[tri2edge[i][1]];
-      connect3d[i].nside_e2 = nside_e2[tri2edge[i][1]];
-      connect3d[i].aflag_e2 = aflag_e2[tri2edge[i][1]];
+      connect3d[i].neigh_e2 = neigh_e2[i];
+      connect3d[i].ewhich_e2 = ewhich_e2[i];
+      connect3d[i].nside_e2 = nside_e2[i];
+      connect3d[i].aflag_e2 = aflag_e2[i];
     }
 
-    connect3d[i].ne3 = counts[tri2edge[i][2]];
+    connect3d[i].ne3 = e3_counts[i];
     if (connect3d[i].ne3 == 0) {
       connect3d[i].neigh_e3 = nullptr;
       connect3d[i].ewhich_e3 = nullptr;
       connect3d[i].nside_e3 = nullptr;
       connect3d[i].aflag_e3 = nullptr;
     } else {
-      connect3d[i].neigh_e3 = neigh_e3[tri2edge[i][2]];
-      connect3d[i].ewhich_e3 = ewhich_e3[tri2edge[i][2]];
-      connect3d[i].nside_e3 = nside_e3[tri2edge[i][2]];
-      connect3d[i].aflag_e3 = aflag_e3[tri2edge[i][2]];
+      connect3d[i].neigh_e3 = neigh_e3[i];
+      connect3d[i].ewhich_e3 = ewhich_e3[i];
+      connect3d[i].nside_e3 = nside_e3[i];
+      connect3d[i].aflag_e3 = aflag_e3[i];
     }
   }
 
@@ -2253,7 +2276,7 @@ void FixSurfaceGlobal::connectivity3d()
   for (int i = 0; i < ntris; i++) {
     if (connect3d[i].ne1) {
       j = 0;
-      for (m = 0; m <= connect3d[i].ne1; m++) {
+      for (m = 0; m < counts[tri2edge[i][0]]; m++) {
         if (etris[tri2edge[i][0]][m] == i) continue;
         connect3d[i].neigh_e1[j] = etris[tri2edge[i][0]][m];
         j++;
@@ -2261,7 +2284,7 @@ void FixSurfaceGlobal::connectivity3d()
     }
     if (connect3d[i].ne2) {
       j = 0;
-      for (m = 0; m <= connect3d[i].ne2; m++) {
+      for (m = 0; m < counts[tri2edge[i][1]]; m++) {
         if (etris[tri2edge[i][1]][m] == i) continue;
         connect3d[i].neigh_e2[j] = etris[tri2edge[i][1]][m];
         j++;
@@ -2269,7 +2292,7 @@ void FixSurfaceGlobal::connectivity3d()
     }
     if (connect3d[i].ne3) {
       j = 0;
-      for (m = 0; m <= connect3d[i].ne3; m++) {
+      for (m = 0; m < counts[tri2edge[i][2]]; m++) {
         if (etris[tri2edge[i][2]][m] == i) continue;
         connect3d[i].neigh_e3[j] = etris[tri2edge[i][2]][m];
         j++;
@@ -2277,11 +2300,14 @@ void FixSurfaceGlobal::connectivity3d()
     }
   }
 
-  // deallocate counts, tri2edge, etris
+  // deallocate counts, tri2edge, etris, e123_counts
 
   memory->destroy(counts);
   memory->destroy(tri2edge);
   memory->destroy(etris);
+  memory->destroy(e1_counts);
+  memory->destroy(e2_counts);
+  memory->destroy(e3_counts);
 
   // set connect3d edge ewhich/nside/aflag for each edge of each tri
   // see fsg.h file for an explanation of each edge vector in Connect3d
@@ -2431,7 +2457,7 @@ void FixSurfaceGlobal::connectivity3d()
   }
 
   // setup tri corner point connectivity lists
-  // count # of tris containing each corner point (including self)
+  // counts = # of tris containing each corner point (including self)
   // ctris = ragged 2d array with indices of tris which contain each point
 
   memory->create(counts,npoints,"surface/global:counts");
@@ -2444,6 +2470,7 @@ void FixSurfaceGlobal::connectivity3d()
     counts[tris[i].p3]++;
   }
 
+  int **ctris;
   memory->create_ragged(ctris,npoints,counts,"surface/global:ctris");
 
   for (int i = 0; i < npoints; i++) counts[i] = 0;
@@ -2453,85 +2480,132 @@ void FixSurfaceGlobal::connectivity3d()
     ctris[tris[i].p2][counts[tris[i].p2]++] = i;
     ctris[tris[i].p3][counts[tris[i].p3]++] = i;
   }
+  
+  // c1/c2/c3_counts = # of tris connecting to corner points c1/c2/c3 of each tri
+  // do NOT include self or tris which connect to an edge
+  // only include tris which only connect at the corner point
 
-  // allocate all ragged corner arrays which Connect2d will point to
-  // first subtract self from each point's count
-  //   b/c connect3d vectors will NOT include self
-
-  for (int i = 0; i < npoints; i++) counts[i]--;
-
-  memory->create_ragged(neigh_c1,npoints,counts,"surface/global:neigh_c1");
-  memory->create_ragged(neigh_c2,npoints,counts,"surface/global:neigh_c2");
-  memory->create_ragged(neigh_c3,npoints,counts,"surface/global:neigh_c3");
-  memory->create_ragged(cwhich_c1,npoints,counts,"surface/global:cwhich_c1");
-  memory->create_ragged(cwhich_c2,npoints,counts,"surface/global:cwhich_c2");
-  memory->create_ragged(cwhich_c3,npoints,counts,"surface/global:cwhich_c3");
-
-  // set connect3d corner vector ptrs to rows of corresponding ragged arrays
+  int *c1_counts,*c2_counts,*c3_counts;
+  memory->create(c1_counts,ntris,"surface/global:c1_counts");
+  memory->create(c2_counts,ntris,"surface/global:c2_counts");
+  memory->create(c3_counts,ntris,"surface/global:c3_counts");
 
   for (int i = 0; i < ntris; i++) {
-    connect3d[i].nc1 = counts[tris[i].p1];
+    c1_counts[i] = counts[tris[i].p1] - 1;
+    c1_counts[i] -= connect3d[i].ne3 + connect3d[i].ne1;
+    c2_counts[i] = counts[tris[i].p2] - 1;
+    c2_counts[i] -= connect3d[i].ne1 + connect3d[i].ne2;
+    c3_counts[i] = counts[tris[i].p3] - 1;
+    c3_counts[i] -= connect3d[i].ne2 + connect3d[i].ne3;
+  }
+  
+  // allocate all corner ragged arrays which Connect3d will point to
+
+  memory->create_ragged(neigh_c1,ntris,c1_counts,"surface/global:neigh_c1");
+  memory->create_ragged(neigh_c2,ntris,c2_counts,"surface/global:neigh_c2");
+  memory->create_ragged(neigh_c3,ntris,c3_counts,"surface/global:neigh_c3");
+  memory->create_ragged(cwhich_c1,ntris,c1_counts,"surface/global:cwhich_c1");
+  memory->create_ragged(cwhich_c2,ntris,c2_counts,"surface/global:cwhich_c2");
+  memory->create_ragged(cwhich_c3,ntris,c3_counts,"surface/global:cwhich_c3");
+
+  // set connect3d corner vector ptrs to rows of corresponding corner ragged arrays
+
+  for (int i = 0; i < ntris; i++) {
+    connect3d[i].nc1 = c1_counts[i];
     if (connect3d[i].nc1 == 0) {
       connect3d[i].neigh_c1 = nullptr;
       connect3d[i].cwhich_c1 = nullptr;
     } else {
-      connect3d[i].neigh_c1 = neigh_c1[tris[i].p1];
-      connect3d[i].cwhich_c1 = cwhich_c1[tris[i].p1];
+      connect3d[i].neigh_c1 = neigh_c1[i];
+      connect3d[i].cwhich_c1 = cwhich_c1[i];
     }
 
-    connect3d[i].nc2 = counts[tris[i].p2];
+    connect3d[i].nc2 = c2_counts[i];
     if (connect3d[i].nc2 == 0) {
       connect3d[i].neigh_c2 = nullptr;
       connect3d[i].cwhich_c2 = nullptr;
     } else {
-      connect3d[i].neigh_c2 = neigh_c2[tris[i].p2];
-      connect3d[i].cwhich_c2 = cwhich_c2[tris[i].p2];
+      connect3d[i].neigh_c2 = neigh_c2[i];
+      connect3d[i].cwhich_c2 = cwhich_c2[i];
     }
 
-    connect3d[i].nc3 = counts[tris[i].p3];
+    connect3d[i].nc3 = c3_counts[i];
     if (connect3d[i].nc3 == 0) {
       connect3d[i].neigh_c3 = nullptr;
       connect3d[i].cwhich_c3 = nullptr;
     } else {
-      connect3d[i].neigh_c3 = neigh_c3[tris[i].p3];
-      connect3d[i].cwhich_c3 = cwhich_c3[tris[i].p3];
+      connect3d[i].neigh_c3 = neigh_c3[i];
+      connect3d[i].cwhich_c3 = cwhich_c3[i];
     }
   }
 
-  // initialize connect3d corner neigh vectors for each corner point of each tri
-  // do NOT include self
+  // initialize connect3d corner neigh vectors for each corner of each tri
+  // do NOT include self or tris which connect to an edge
+  // only include tris which only connect at the corner point
 
+  int n,medge,skipflag;
+  
   for (int i = 0; i < ntris; i++) {
     if (connect3d[i].nc1) {
       j = 0;
-      for (m = 0; m <= connect3d[i].nc1; m++) {
-        if (ctris[tris[i].p1][m] == i) continue;
+      for (m = 0; m < counts[tris[i].p1]; m++) {
+        n = ctris[tris[i].p1][m];
+        if (n == i) continue;
+        
+        skipflag = 0;
+        for (medge = 0; medge < connect3d[i].ne3; medge++)
+          if (n == connect3d[i].neigh_e3[medge]) skipflag = 1;
+        for (medge = 0; medge < connect3d[i].ne1; medge++)
+          if (n == connect3d[i].neigh_e1[medge]) skipflag = 1;
+        if (skipflag) continue;
+        
         connect3d[i].neigh_c1[j] = ctris[tris[i].p1][m];
         j++;
       }
     }
     if (connect3d[i].nc2) {
       j = 0;
-      for (m = 0; m <= connect3d[i].nc2; m++) {
-        if (ctris[tris[i].p2][m] == i) continue;
+      for (m = 0; m < counts[tris[i].p2]; m++) {
+        n = ctris[tris[i].p2][m];
+        if (n == i) continue;
+
+        skipflag = 0;
+        for (medge = 0; medge < connect3d[i].ne1; medge++)
+          if (n == connect3d[i].neigh_e1[medge]) skipflag = 1;
+        for (medge = 0; medge < connect3d[i].ne2; medge++)
+          if (n == connect3d[i].neigh_e2[medge]) skipflag = 1;
+        if (skipflag) continue;
+
         connect3d[i].neigh_c2[j] = ctris[tris[i].p2][m];
         j++;
       }
     }
     if (connect3d[i].nc3) {
       j = 0;
-      for (m = 0; m <= connect3d[i].nc3; m++) {
-        if (ctris[tris[i].p3][m] == i) continue;
+      for (m = 0; m < counts[tris[i].p3]; m++) {
+        n = ctris[tris[i].p3][m];
+        if (n == i) continue;
+
+        skipflag = 0;
+        for (medge = 0; medge < connect3d[i].ne2; medge++)
+          if (n == connect3d[i].neigh_e2[medge]) skipflag = 1;
+        for (medge = 0; medge < connect3d[i].ne3; medge++)
+          if (n == connect3d[i].neigh_e3[medge]) skipflag = 1;
+        if (skipflag) continue;
+
         connect3d[i].neigh_c3[j] = ctris[tris[i].p3][m];
         j++;
       }
     }
   }
 
-  // deallocate counts and ctris
+  // deallocate counts, ctris, c123_counts
 
   memory->destroy(counts);
   memory->destroy(ctris);
+  memory->destroy(c1_counts);
+  memory->destroy(c2_counts);
+  memory->destroy(c3_counts);
 
   // set connect3d cwhich for each end point of each line
   // see fsg.h file for an explanation of each corner vector in Connect3d
