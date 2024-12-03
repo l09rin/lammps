@@ -758,7 +758,7 @@ void FixSurfaceGlobal::post_force(int vflag)
   double *history,*allhistory,**firsthistory;
 
   double dot, max_overlap, norm, *knorm;
-  int connection_type, aflag, endpt_flag;
+  int it, jjtmp, connection_type, aflag, endpt_flag;
   std::unordered_set<int> *processed_contacts = new std::unordered_set<int>();
   std::map<int, int> *contacts_map = new std::map<int, int>();
   std::vector<int> *force_surfs = new std::vector<int>();
@@ -950,7 +950,7 @@ void FixSurfaceGlobal::post_force(int vflag)
       if (processed_contacts->find(j) != processed_contacts->end()) continue;
       processed_contacts->insert(j);
       force_surfs->clear();
-      force_surfs->push_back(j);
+      force_surfs->push_back(n);
 
       // Loop through connected surfs
       if (dimension == 2) {
@@ -1010,7 +1010,23 @@ void FixSurfaceGlobal::post_force(int vflag)
 
       // Apply force
 
+      max_overlap = 0.0;
+      for (it = 0; it < force_surfs->size(); it++) {
+        m = (*force_surfs)[it];
+        model->xj[0] += contact_surfs[m].r[0] * contact_surfs[m].overlap;
+        model->xj[1] += contact_surfs[m].r[1] * contact_surfs[m].overlap;
+        model->xj[2] += contact_surfs[m].r[2] * contact_surfs[m].overlap;
+        max_overlap = MAX(max_overlap, contact_surfs[m].overlap);
 
+        norm += contact_surfs[m].overlap * contact_surfs[m].overlap;
+      }
+
+      norm = max_overlap / norm;
+      model->xj[0] *= norm;
+      model->xj[1] *= norm;
+      model->xj[2] *= norm;
+
+      if (use_history) model->touch = touch[jj];
 
       // guaranteed in contact, but need to calculate intermediate variables
       touch_flag = model->check_contact();
@@ -1026,13 +1042,36 @@ void FixSurfaceGlobal::post_force(int vflag)
       //model->vj = vs;
       //model->omegaj = omegasurf[j];
 
-      //if (use_history) {
-      //  touch[jj] = 1;
-      //  history = &allhistory[3*jj];
-      //  model->history = history;
-      //}
+      if (use_history) {
+        jj = contact_surfs[n].neigh_index;
+
+        // Check if another contact has a stored history
+        if (touch[jj] != 1) {
+          for (it = 0; it < force_surfs->size(); it++) {
+            m = (*force_surfs)[it];
+            jjtmp = contact_surfs[m].neigh_index;
+            if (touch[jjtmp] == 1);
+              jj = jjtmp;
+          }
+        }
+
+        touch[jj] = 1;
+        history = &allhistory[size_history * jj];
+        model->history = history;
+      }
 
       model->calculate_forces();
+
+      // Sychronize history across flat contacts
+      for (it = 0; it < force_surfs->size(); it++) {
+        m = (*force_surfs)[it];
+        jjtmp = contact_surfs[m].neigh_index;
+        if (jj != jjtmp) {
+          touch[jjtmp] = 1;
+          for (k = 0; k < size_history; k++)
+            allhistory[size_history * jjtmp + k] = history[k];
+        }
+      }
 
       forces = model->forces;
       torquesi = model->torquesi;
@@ -3063,7 +3102,7 @@ void FixSurfaceGlobal::walk_flat_connections2d(int j, std::unordered_set<int>
   // Find geometry of current flat surf and process
   processed_contacts->insert(j);
   int n = (*contacts_map)[j];
-  force_surfs->push_back(j);
+  force_surfs->push_back(n);
 
   // Find flat connections
   int k, aflag;
