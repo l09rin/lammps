@@ -1012,17 +1012,17 @@ void FixSurfaceGlobal::post_force(int vflag)
 
       // Average geometry
 
-      // TODO correct velocity, from before:
+      // TODO correct velocity at contact point, from before:
 
       //ds[0] = contact[0] - xsurf[j][0];
       //ds[1] = contact[1] - xsurf[j][1];
       //ds[2] = contact[2] - xsurf[j][2];
 
-      //vs[0] = vsurf[j][0] + (omegasurf[j][1] * ds[2] - omegasurf[j][2] * ds[1]);
-      //vs[1] = vsurf[j][1] + (omegasurf[j][2] * ds[0] - omegasurf[j][0] * ds[2]);
-      //vs[2] = vsurf[j][2] + (omegasurf[j][0] * ds[1] - omegasurf[j][1] * ds[0]);
+      //v_contact[0] = vsurf[j][0] + (omegasurf[j][1] * ds[2] - omegasurf[j][2] * ds[1]);
+      //v_contact[1] = vsurf[j][1] + (omegasurf[j][2] * ds[0] - omegasurf[j][0] * ds[2]);
+      //v_contact[2] = vsurf[j][2] + (omegasurf[j][0] * ds[1] - omegasurf[j][1] * ds[0]);
 
-      //model->vj = vs;
+      //model->vj = v_contact;
       //model->omegaj = omegasurf[j];
 
       if (force_surfs->size() != 1) {
@@ -1083,6 +1083,8 @@ void FixSurfaceGlobal::post_force(int vflag)
       model->calculate_forces();
 
       // Sychronize history across flat contacts
+      //   could create issues if one crosses the bridge of a "U" of flat surfaces
+      //   e.g. if one steps off downhill on a hair pin turn
       for (it = 0; it < force_surfs->size(); it++) {
         m = (*force_surfs)[it];
         jjtmp = contact_surfs[m].neigh_index;
