@@ -25,6 +25,7 @@ FixStyle(surface/global,FixSurfaceGlobal)
 #include <map>
 #include <unordered_set>
 #include <tuple>
+#include <vector>
 
 namespace LAMMPS_NS {
 
@@ -250,21 +251,13 @@ class FixSurfaceGlobal : public Fix {
   // struct for storing contact data
 
   struct ContactSurf {
-    int index, type, jflag;
-    double r[3];
-    double overlap;
-  };
-
-  struct ContactForce {
-    int nsurfs, type;
+    int index, neigh_index, type, jflag;
     double r[3];
     double overlap;
   };
 
   ContactSurf *contact_surfs;
-  ContactForce *contact_forces;
   int nmax_contact_surfs;
-  int nmax_contact_forces;
 
   // data for DumpImage
 
@@ -282,7 +275,7 @@ class FixSurfaceGlobal : public Fix {
   void connectivity3d();
   void surface_attributes();
 
-  void walk_flat_connections2d(int, std::unordered_set<int> *, std::map<int, int> *, ContactForce *);
+  void walk_flat_connections2d(int, std::unordered_set<int> *, std::map<int, int> *, std::vector<int> *);
 
   int modify_param_move(Motion *, int, char **);
 
