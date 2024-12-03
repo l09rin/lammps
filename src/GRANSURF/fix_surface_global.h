@@ -23,6 +23,7 @@ FixStyle(surface/global,FixSurfaceGlobal)
 #include <stdio.h>
 #include "fix.h"
 #include <map>
+#include <unordered_set>
 #include <tuple>
 
 namespace LAMMPS_NS {
@@ -86,9 +87,9 @@ class FixSurfaceGlobal : public Fix {
   int history, size_history, heat_flag;
 
   // neighbor params
-  
+
   double triggersq;
-  
+
   // settings for motion applied to specific surf types
 
   struct Motion {
@@ -109,11 +110,11 @@ class FixSurfaceGlobal : public Fix {
   int anymove;
 
   int *type2motion;
-  
+
   double **points_original,**xsurf_original;
   double **points_lastneigh;
   int *pointmove;
-  
+
   // storage of granular history info
 
   class FixNeighHistory *fix_history;
@@ -151,7 +152,7 @@ class FixSurfaceGlobal : public Fix {
   int nsurf;                  // count of lines or tris for 2d/3d
 
   // ragged 2d arrays for 2d connectivity
-  
+
   int **plines;               // indices of lines which contain each end point
   int **neigh_p1;             // indices of other lines connected to endpt 1
   int **pwhich_p1;            // which point (0/1) on other line is endpt 1
@@ -165,7 +166,7 @@ class FixSurfaceGlobal : public Fix {
   int **aflag_p2;             // ditto for endpt 2
 
   // ragged 2d arrays for 3d edge connectivity
-  
+
   int **etris;                // indices of tris which contain each edge
   int **neigh_e1;             // indices of other tris connected to edge 1
   int **ewhich_e1;            // which edge (0/1/2) on other tri is edge 1
@@ -183,7 +184,7 @@ class FixSurfaceGlobal : public Fix {
   int **aflag_e3;             // ditto for edge 3
 
   // ragged 2d arrays for 3d corner connectivity
-  
+
   int **ctris;                // indices of tris which contain each corner point
   int **neigh_c1;             // indices of other tris connected to cpt 1
   int **cwhich_c1;            // which corner point (0/1/2) on other tri is cpt 1
@@ -249,13 +250,13 @@ class FixSurfaceGlobal : public Fix {
   // struct for storing contact data
 
   struct ContactSurf {
-    int index, type;
+    int index, type, jflag;
     double r[3];
     double overlap;
   };
 
   struct ContactForce {
-    int naveraged, type;
+    int nsurfs, type;
     double r[3];
     double overlap;
   };
@@ -280,7 +281,9 @@ class FixSurfaceGlobal : public Fix {
   void connectivity2d();
   void connectivity3d();
   void surface_attributes();
-    
+
+  void walk_flat_connections2d(int, std::unordered_set<int> *, std::unordered_set<int> *, ContactForce *);
+
   int modify_param_move(Motion *, int, char **);
 
   void move_linear(int, int);

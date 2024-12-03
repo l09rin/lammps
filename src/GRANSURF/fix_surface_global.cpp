@@ -127,7 +127,7 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
 	iarg += 4;
       } else error->all(FLERR,"Illegal fix surface/global command");
     } else break;
-    
+
     ninput++;
   }
 
@@ -141,11 +141,11 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
   models = nullptr;
   nmodel = maxmodel = 0;
   heat_flag = 0;
-  
+
   while (iarg < narg) {
     if (strcmp(arg[iarg],"model") == 0) {
       if (iarg+4 > narg) error->all(FLERR,"Illegal fix surface/global command");
-      
+
       if (nmodel == maxmodel) {
 	maxmodel += DELTAMODEL;
 	modeltypes = (ModelTypes *)
@@ -159,7 +159,7 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
 
       // assign range of particle and surf types to this model
       // ues MAXSURFTYPE for now, in case smax keyword extends input surf types
-      
+
       utils::bounds(FLERR, arg[iarg+1], 1, atom->ntypes,
 		    modeltypes[nmodel].plo, modeltypes[nmodel].phi, error);
       utils::bounds(FLERR, arg[iarg+2], 1, MAXSURFTYPE,
@@ -171,7 +171,7 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
       int classic_flag = 1;
       if (strcmp(arg[iarg+3], "granular") == 0) classic_flag = 0;
       iarg += 3;
-      
+
       if (classic_flag) {
 	iarg = model->define_classic_model(arg, iarg, narg);
 	if (iarg < narg && strcmp(arg[iarg],"limit_damping") == 0) {
@@ -204,7 +204,7 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
       // JOEL NOTE: is damping_model check only for granular or also classic ?
 
       if (!model->damping_model) model->construct_sub_model("viscoelastic", DAMPING);
-      
+
       model->init();
 
       // JOEL NOTE: do size_history and use_history apply to each model or all models ?
@@ -221,7 +221,7 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
     error->all(FLERR,"Fix surface/global command requires model keyword");
 
   // maxsurftype = max surf type of any input surf (for now)
-  
+
   maxsurftype = 0;
   if (dimension == 2) {
     for (int i = 0; i < nlines; i++)
@@ -234,10 +234,10 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
   // optional command-line args
   // smaxtype overrides max surf type of input surfs
   // flat overrides FLATTHRESH of one degree
-  
+
   int Twall_defined = 0;
   flatthresh = FLATTHRESH;
-  
+
   while (iarg < narg) {
     if (strcmp(arg[iarg],"smaxtype") == 0) {
       if (iarg+2 > narg) error->all(FLERR,"Illegal fix surface/global command");
@@ -273,7 +273,7 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
   // reset modeltypes shi from MAXSURFTYPE to maxsurtype
   // initialize types2model for all particle/surf type pairs
   // check that a model has been assigned to every type pair
-  
+
   for (int i = 0; i < nmodel; i++)
     if (modeltypes[i].shi == MAXSURFTYPE) modeltypes[i].shi = maxsurftype;
 
@@ -283,7 +283,7 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
   for (int i = 1; i <= atom->ntypes; i++)
     for (int j = 1; j <= maxsurftype; j++)
       types2model[i][j] = nullptr;
-  
+
   for (int m = 0; m < nmodel; m++)
     for (int i = modeltypes[m].plo; i <= modeltypes[m].phi; i++)
       for (int j = modeltypes[m].slo; j <= modeltypes[m].shi; j++)
@@ -293,7 +293,7 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
     for (int j = 1; j <= maxsurftype; j++)
       if (!types2model[i][j])
 	error->all(FLERR,"Fix surface/global type pair is missing a granular model");
-  
+
   // initializations
 
   if (dimension == 2) nsurf = nlines;
@@ -307,7 +307,7 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
   points_original = nullptr;
   xsurf_original = nullptr;
   pointmove = nullptr;
-  
+
   neigh_p1 = neigh_p2 = nullptr;
   pwhich_p1 = pwhich_p2 = nullptr;
   nside_p1 = nside_p2 = nullptr;
@@ -352,21 +352,21 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
   imdata = nullptr;
 
   type2motion = new int[maxsurftype+1];
-  
+
   firsttime = 1;
 
   // initialize surface attributes
-  
+
   surface_attributes();
 
   // error checks on duplicate surfs or zero-size surfs
 
   if (dimension == 2) check2d();
   else check3d();
-  
+
   // compute connectivity of triangles/lines
-  // create Connect3d or Connect2d data structs 
-  
+  // create Connect3d or Connect2d data structs
+
   if (dimension == 2) connectivity2d();
   else connectivity3d();
 }
@@ -390,7 +390,7 @@ FixSurfaceGlobal::~FixSurfaceGlobal()
 
   for (int i = 1; i <= atom->ntypes; i++) delete [] types2model[i];
   delete [] types2model;
-  
+
   memory->destroy(neigh_p1);
   memory->destroy(neigh_p2);
   memory->destroy(pwhich_p1);
@@ -412,7 +412,7 @@ FixSurfaceGlobal::~FixSurfaceGlobal()
   memory->destroy(aflag_e1);
   memory->destroy(aflag_e2);
   memory->destroy(aflag_e3);
-  
+
   memory->destroy(neigh_c1);
   memory->destroy(neigh_c2);
   memory->destroy(neigh_c3);
@@ -438,7 +438,7 @@ FixSurfaceGlobal::~FixSurfaceGlobal()
 
   memory->sfree(motions);
   delete [] type2motion;
-  
+
   delete list;
   delete listhistory;
   delete [] zeroes;
@@ -496,7 +496,7 @@ void FixSurfaceGlobal::init()
   // define history indices
   // JOEL NOTE: WHat are "beyond" contact models ?
   //            Why is this check not made in constructor ?
-  
+
   int next_index = 0;
   if (model->beyond_contact) //next_index = 1;
     error->all(FLERR, "Beyond contact models not currenty supported");
@@ -555,12 +555,12 @@ void FixSurfaceGlobal::setup_pre_neighbor()
 void FixSurfaceGlobal::initial_integrate(int vflag)
 {
   int imotion,mstyle;
-  
+
   for (int i = 0; i < nsurf; i++) {
     if (dimension == 2) imotion = type2motion[lines[i].type];
     else imotion = type2motion[tris[i].type];
     if (imotion < 0) continue;
-    
+
     mstyle = motions[imotion].mstyle;
     if (mstyle == LINEAR) move_linear(imotion,i);
     else if (mstyle == WIGGLE) move_wiggle(imotion,i);
@@ -585,12 +585,12 @@ void FixSurfaceGlobal::initial_integrate(int vflag)
       pointmove[tris[i].p3] = 0;
     }
   }
-  
+
   // trigger reneighbor if any point has moved skin/2 distance
 
   double dx,dy,dz,rsq;
   double *pt;
-  
+
   int triggerflag = 0;
 
   for (int i = 0; i < npoints; i++) {
@@ -761,10 +761,15 @@ void FixSurfaceGlobal::post_force(int vflag)
   double dr[3],contact[3],ds[3],vs[3],*forces,*torquesi;
   double *history,*allhistory,**firsthistory;
 
+  double dot, *knorm;
+  int connection_type, aflag, endpt_flag;
+  std::unordered_set<int> *processed_contacts =
+    new std::unordered_set<int>();
+  std::unordered_set<int> *current_contacts =
+    new std::unordered_set<int>();
+
   model->history_update = 1;
   if (update->setupflag) model->history_update = 0;
-
-  std::unordered_set<int> processed_contacts;
 
   // if just reneighbored:
   // update rigid body masses for owned atoms if using FixRigid
@@ -836,6 +841,7 @@ void FixSurfaceGlobal::post_force(int vflag)
     }
 
     n_contact_surfs = 0;
+    current_contacts->clear();
     for (jj = 0; jj < jnum; jj++) {
       j = jlist[jj];
 
@@ -908,8 +914,10 @@ void FixSurfaceGlobal::post_force(int vflag)
       }
 
       if (dimension == 2) {
+        current_contacts->insert(j);
         contact_surfs[n_contact_surfs].index = j;
         contact_surfs[n_contact_surfs].type = lines[j].type;
+        contact_surfs[n_contact_surfs].jflag = jflag;
         contact_surfs[n_contact_surfs].overlap = sqrt(rsq) - radsum;
         contact_surfs[n_contact_surfs].r[0] = dr[0];
         contact_surfs[n_contact_surfs].r[1] = dr[1];
@@ -920,19 +928,25 @@ void FixSurfaceGlobal::post_force(int vflag)
     }
 
     // reduce set of contacts
-    
+
     std::sort(contact_surfs, contact_surfs + n_contact_surfs, [](ContactSurf a, ContactSurf b) {return a.overlap > b.overlap;});
 
-    n_contact_forces = 0;
-    processed_contacts.clear();
+    n_contact_forces = -1;
+    processed_contacts->clear();
 
     for (n = 0; n < n_contact_surfs; n++) {
       j = contact_surfs[n].index;
 
-      if (processed_contacts.find(j) != processed_contacts.end()) continue;
-      processed_contacts.insert(j);
+      if (processed_contacts->find(j) != processed_contacts->end()) continue;
+      processed_contacts->insert(j);
 
       n_contact_forces += 1;
+      contact_forces[n_contact_forces].nsurfs = 1;
+      contact_forces[n_contact_forces].type = contact_surfs[n].type;
+      contact_forces[n_contact_forces].overlap = contact_surfs[n].overlap;
+      contact_forces[n_contact_forces].r[0] = contact_surfs[n].r[0];
+      contact_forces[n_contact_forces].r[1] = contact_surfs[n].r[1];
+      contact_forces[n_contact_forces].r[2] = contact_surfs[n].r[2];
 
       if (n_contact_forces + 1 > nmax_contact_forces) {
         nmax_contact_forces += DELTACONTACTS;
@@ -940,21 +954,62 @@ void FixSurfaceGlobal::post_force(int vflag)
                                       "surface/global:contact_forces");
       }
 
+      // Loop through connected surfs
       if (dimension == 2) {
-        for (m = 0; m < connect2d[j].np1; m++) {
-          k = connect2d[j].neigh_p1[m];
-          //append to connected_surfs
-        }
-        for (m = 0; m < connect2d[j].np2; m++) {
-          k = connect2d[j].neigh_p2[m];
+        for (m = 0; m < (connect2d[j].np1 + connect2d[j].np2); m++) {
+          if (m < connect2d[j].np1) {
+            k = connect2d[j].neigh_p1[m];
+            aflag = connect2d[j].aflag_p1[m];
+            endpt_flag = 1;
+          } else {
+            k = connect2d[j].neigh_p2[m - connect2d[j].np1];
+            aflag = connect2d[j].aflag_p2[m - connect2d[j].np1];
+            endpt_flag = 2;
+          }
+
+          // Skip if not in contact
+          if (current_contacts->find(k) != current_contacts->end())
+            continue;
+
+          // Skip if processed
+          if (processed_contacts->find(k) != processed_contacts->end())
+            continue;
+
+          if (aflag == FLAT) {
+            connection_type = FLAT;
+          } else {
+            knorm = lines[k].norm;
+            dot = dr[0] * knorm[0] + dr[1] * knorm[1] + dr[2] * knorm[2];
+            if (dot >= 0) {
+              connection_type = aflag;
+            } else {
+              if (aflag == CONCAVE)
+                connection_type = CONVEX;
+              else if (aflag == CONVEX)
+                connection_type = CONCAVE;
+            }
+          }
+
+          // TODO: confirm how to handle multiple types
+          if (connection_type == FLAT && contact_surfs[n].type == lines[k].type) {
+            // recursively walk same-type flat contacts to average geometry
+            walk_flat_connections2d(k, processed_contacts, current_contacts, &contact_forces[n_contact_forces]);
+          } else if (connection_type == CONVEX) {
+            // skip convex surfaces, farther from original
+            processed_contacts->insert(k);
+          } else if (connection_type == CONCAVE) {
+            // skip if contact is at a shared point, then only exert one force
+            if ((contact_surfs[n].jflag == -1 && endpt_flag == 1) ||
+                (contact_surfs[n].jflag == -2 && endpt_flag == 2)) {
+              processed_contacts->insert(k);
+            }
+          }
         }
 
-        // loop through connected surfs...
       } else {
         continue; // 2d to start
       }
     }
-
 
     /*
     For contact in reduced contacts:
@@ -1036,6 +1091,9 @@ void FixSurfaceGlobal::post_force(int vflag)
       if (heat_flag) heatflow[i] += model->dq;
     */
   }
+
+  delete processed_contacts;
+  delete current_contacts;
 }
 
 /* ----------------------------------------------------------------------
@@ -1059,7 +1117,7 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
       utils::bounds(FLERR, fields[ifield], 1, maxsurftype, lo, hi, error);
       for (int i = lo; i <= hi; i++) stypes[i] = 1;
     }
-    
+
     if (strcmp(arg[2],"none") == 0) {
       for (int itype = 1; itype <= maxsurftype; itype++) {
 	if (type2motion[itype] < 0) continue;
@@ -1079,11 +1137,11 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
 	  }
 	}
       }
-      
+
       anymove = 0;
       for (int i = 1; i <= maxsurftype; i++)
 	if (type2motion[i] >= 0) anymove = 1;
-      
+
       if (!anymove) {
 	memory->destroy(points_lastneigh);
 	memory->destroy(points_original);
@@ -1093,20 +1151,20 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
 	points_original = nullptr;
 	xsurf_original = nullptr;
 	pointmove = nullptr;
-	
+
 	int ifix = modify->find_fix(id);
 	modify->fmask[ifix] &= ~INITIAL_INTEGRATE;
 	force_reneighbor = 0;
 	next_reneighbor = -1;
       }
-      
+
       delete [] stypes;
       return 3;
     }
 
     // new motion operation
     // re-use an inactive motion or add a new motion to list
-    
+
     int imotion;
     for (imotion = 0; imotion < nmotion; imotion++)
       if (!motions[imotion].active) break;
@@ -1137,9 +1195,9 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
     }
 
     anymove = 1;
-    
+
     // parse additional move style arguments
-    
+
     int styleargs = modify_param_move(&motions[imotion],narg-2,&arg[2]);
     motions[imotion].time_origin = update->ntimestep;
 
@@ -1155,12 +1213,12 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
     double omega;
     double *runit;
     int mstyle = motions[imotion].mstyle;
-    
+
     for (int i = 0; i < nsurf; i++) {
       if (dimension == 2) itype = lines[i].type;
       else itype = tris[i].type;
       if (!stypes[itype]) continue;
-      
+
       if (dimension == 2) {
 	p1 = lines[i].p1;
 	p2 = lines[i].p2;
@@ -1184,11 +1242,11 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
 	points_lastneigh[p3][1] = points_original[p3][1] = points[p3].x[1];
 	points_lastneigh[p3][2] = points_original[p3][2] = points[p3].x[2];
       }
-    
+
       xsurf_original[i][0] = xsurf[i][0];
       xsurf_original[i][1] = xsurf[i][1];
       xsurf_original[i][2] = xsurf[i][2];
-      
+
       if (mstyle == ROTATE || mstyle == TRANSROT) {
 	omega = motions[imotion].omega;
 	runit = motions[imotion].unit;
@@ -1213,7 +1271,7 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
 
     auto region = domain->get_region_by_id(arg[2]);
     if (!region) error->all(FLERR,"Fix_modify type/region region {} does not exist", arg[2]);
-    
+
     if (dimension == 2) {
       for (int i = 0; i < nlines; i++)
 	if (region->match(xsurf[i][0],xsurf[i][1],xsurf[i][2]))
@@ -1226,7 +1284,7 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
 
     return 3;
   }
-  
+
   // keyword not recognized
 
   return 0;
@@ -1255,7 +1313,7 @@ int FixSurfaceGlobal::modify_param_move(Motion *motion, int narg, char **arg)
       motion->vzflag = 1;
       motion->vz = utils::numeric(FLERR, arg[3], false, lmp);
     }
- 
+
     if (dimension == 2)
       if (motion->vzflag && (motion->vz != 0.0))
         error->all(FLERR,"Fix_modify move cannot set linear z motion for 2d problem");
@@ -1305,7 +1363,7 @@ int FixSurfaceGlobal::modify_param_move(Motion *motion, int narg, char **arg)
     motion->axis[0] = utils::numeric(FLERR,arg[4],false,lmp);
     motion->axis[1] = utils::numeric(FLERR,arg[5],false,lmp);
     motion->axis[2] = utils::numeric(FLERR,arg[6],false,lmp);
-    
+
     if (dimension == 2)
       if (motion->axis[0] != 0.0 || motion->axis[1] != 0.0)
         error->all(FLERR,"Fix_modify move cannot rotate around "
@@ -1332,7 +1390,7 @@ int FixSurfaceGlobal::modify_param_move(Motion *motion, int narg, char **arg)
 
     error->all(FLERR,
 	       "Fix_modify move transrot not yet supported for fix surface/global");
-    
+
     motion->vxflag = motion->vyflag = motion->vzflag = 1;
     motion->vx = utils::numeric(FLERR, arg[1], false, lmp);
     motion->vy = utils::numeric(FLERR, arg[2], false, lmp);
@@ -1377,7 +1435,7 @@ int FixSurfaceGlobal::modify_param_move(Motion *motion, int narg, char **arg)
 	       "Fix_modify move variable not yet supported for fix surface/global");
     return 7;
   }
-  
+
   error->all(FLERR,"Fix_modify move style not recognized");
 
   return 0;
@@ -1403,7 +1461,7 @@ double FixSurfaceGlobal::memory_usage()
   double bytes = 0.0;
 
   // points, lines, tris and connect2d/3d
-  
+
   bytes += npoints*sizeof(Point);
   if (dimension == 2) {
     bytes += nlines*sizeof(Line);
@@ -1418,7 +1476,7 @@ double FixSurfaceGlobal::memory_usage()
   bytes += memory->usage(omegasurf,nsurf,3);
   bytes += memory->usage(radsurf,nsurf);
 
-  if (anymove) { 
+  if (anymove) {
     bytes += memory->usage(points_lastneigh,npoints,3);
     bytes += memory->usage(points_original,npoints,3);
     bytes += memory->usage(xsurf_original,nsurf,3);
@@ -1451,7 +1509,7 @@ double FixSurfaceGlobal::memory_usage()
   // neighbor list
 
   bytes += list->memory_usage();
-  
+
   return bytes;
 }
 
@@ -1701,7 +1759,7 @@ void FixSurfaceGlobal::extract_from_stlfile(char *filename, int stype,
 
   tris = (Tri *) memory->srealloc(tris,ntris*sizeof(Tri),
                                   "surface/global:tris");
-  
+
   // loop over STL tris
   // populate points and tris data structs
   // for each tri: set molID = 1 and type = stype
@@ -1771,9 +1829,9 @@ void FixSurfaceGlobal::check2d()
   // check for zero length lines
   // use coords of points, not indices
   // since (p1,p2) can be zero-length even if p1 != p2
-  
+
   double *pt1,*pt2;
-  
+
   int flag = 0;
   for (int i = 0; i < nlines; i++) {
     pt1 = points[lines[i].p1].x;
@@ -1821,9 +1879,9 @@ void FixSurfaceGlobal::check3d()
   // check for zero length tri edges
   // use coords of points, not indices
   // since (p1,p2) can be zero-length even if p1 != p2
-  
+
   double *pt1,*pt2,*pt3;
-  
+
   int flag = 0;
   for (int i = 0; i < ntris; i++) {
     pt1 = points[tris[i].p1].x;
@@ -1972,9 +2030,9 @@ void FixSurfaceGlobal::connectivity2d()
       }
     }
   }
-  
+
   // deallocate counts and plines
-  
+
   memory->destroy(counts);
   memory->destroy(plines);
 
@@ -2124,7 +2182,7 @@ void FixSurfaceGlobal::connectivity3d()
     counts[tri2edge[i][1]]++;
     counts[tri2edge[i][2]]++;
   }
-  
+
   memory->create_ragged(etris,nedges,counts,"surface/global:etris");
 
   for (int i = 0; i < nedges; i++) counts[i] = 0;
@@ -2155,7 +2213,7 @@ void FixSurfaceGlobal::connectivity3d()
   memory->create_ragged(aflag_e3,nedges,counts,"surface/global:aflag_e3");
 
   // set connect3d edge vector ptrs to rows of corresponding ragged arrays
-  
+
   for (int i = 0; i < ntris; i++) {
     connect3d[i].ne1 = counts[tri2edge[i][0]];
     if (connect3d[i].ne1 == 0) {
@@ -2228,9 +2286,9 @@ void FixSurfaceGlobal::connectivity3d()
       }
     }
   }
-  
+
   // deallocate counts, tri2edge, etris
-  
+
   memory->destroy(counts);
   memory->destroy(tri2edge);
   memory->destroy(etris);
@@ -2261,7 +2319,7 @@ void FixSurfaceGlobal::connectivity3d()
       jnorm = tris[j].norm;
       dotnorm = MathExtra::dot3(inorm,jnorm);
       MathExtra::sub3(points[tris[i].p2].x,points[tris[i].p1].x,iedge);
-      
+
       if ((jpfirst == 1 && jpsecond == 2) ||
 	  (jpfirst == 2 && jpsecond == 3) ||
 	  (jpfirst == 3 && jpsecond == 1)) {
@@ -2335,7 +2393,7 @@ void FixSurfaceGlobal::connectivity3d()
         }
       }
     }
-    
+
     for (m = 0; m < connect3d[i].ne3; m++) {
       j = connect3d[i].neigh_e3[m];
 
@@ -2381,7 +2439,7 @@ void FixSurfaceGlobal::connectivity3d()
       }
     }
   }
-      
+
   // setup tri corner point connectivity lists
   // count # of tris containing each corner point (including self)
   // ctris = ragged 2d array with indices of tris which contain each point
@@ -2481,7 +2539,7 @@ void FixSurfaceGlobal::connectivity3d()
   }
 
   // deallocate counts and ctris
-  
+
   memory->destroy(counts);
   memory->destroy(ctris);
 
@@ -2589,12 +2647,12 @@ void FixSurfaceGlobal::move_linear(int imotion, int i)
   double vx = motion->vx;
   double vy = motion->vy;
   double vz = motion->vz;
-  
+
   // points - use of pointmove only moves a point once
 
   int pindex;
   double *pt;
-  
+
   if (dimension == 2) {
     pindex = lines[i].p1;
     if (!pointmove[pindex]) {
@@ -2611,7 +2669,7 @@ void FixSurfaceGlobal::move_linear(int imotion, int i)
       pointmove[pindex] = 1;
     }
 
-  } else {    
+  } else {
     pindex = tris[i].p1;
     if (!pointmove[pindex]) {
       pt = points[pindex].x;
@@ -2674,12 +2732,12 @@ void FixSurfaceGlobal::move_wiggle(int imotion, int i)
   double ax = motion->ax;
   double ay = motion->ay;
   double az = motion->az;
-  
+
   // points - use of pointmove only moves a point once
 
   int pindex;
   double *pt;
-  
+
   if (dimension == 2) {
     pindex = lines[i].p1;
     if (!pointmove[pindex]) {
@@ -2696,7 +2754,7 @@ void FixSurfaceGlobal::move_wiggle(int imotion, int i)
       pointmove[pindex] = 1;
     }
 
-  } else {    
+  } else {
     pindex = tris[i].p1;
     if (!pointmove[pindex]) {
       pt = points[pindex].x;
@@ -2751,7 +2809,7 @@ void FixSurfaceGlobal::move_rotate(int imotion, int i)
   double omega = motion->omega;
   double *rpoint = motion->point;
   double *runit = motion->unit;
-  
+
   double delta = (update->ntimestep - time_origin) * dt;
   double arg = omega * delta;
   double cosine = cos(arg);
@@ -2786,7 +2844,7 @@ void FixSurfaceGlobal::move_rotate(int imotion, int i)
       pointmove[pindex] = 1;
     }
 
-  } else {    
+  } else {
     pindex = tris[i].p1;
     if (!pointmove[pindex]) {
       move_rotate_point(pindex,rpoint,runit,cosine,sine);
@@ -2805,7 +2863,7 @@ void FixSurfaceGlobal::move_rotate(int imotion, int i)
   }
 
   // xsurf and vsurf
-  
+
   double ddotr;
   double a[3],b[3],c[3],d[3],disp[3];
 
@@ -2825,7 +2883,7 @@ void FixSurfaceGlobal::move_rotate(int imotion, int i)
   disp[0] = a[0]*cosine  + b[0]*sine;
   disp[1] = a[1]*cosine  + b[1]*sine;
   disp[2] = a[2]*cosine  + b[2]*sine;
-  
+
   xsurf[i][0] = rpoint[0] + c[0] + disp[0];
   xsurf[i][1] = rpoint[1] + c[1] + disp[1];
   xsurf[i][2] = rpoint[2] + c[2] + disp[2];
@@ -2845,7 +2903,7 @@ void FixSurfaceGlobal::move_rotate(int imotion, int i)
     MathExtra::sub3(p2,p1,p12);
     MathExtra::cross3(zunit,p12,lines[i].norm);
     MathExtra::norm3(lines[i].norm);
-    
+
   } else {
     p1 = points[tris[i].p1].x;
     p2 = points[tris[i].p2].x;
@@ -2870,7 +2928,7 @@ void FixSurfaceGlobal::move_transrotate(int imotion, int i)
   double omega = motion->omega;
   double *rpoint = motion->point;
   double *runit = motion->unit;
-  
+
   double delta = (update->ntimestep - time_origin) * dt;
   double arg = omega * delta;
   double cosine = cos(arg);
@@ -2900,7 +2958,7 @@ void FixSurfaceGlobal::move_transrotate(int imotion, int i)
 
   int pindex;
   double *pt;
-  
+
   if (dimension == 2) {
     pindex = lines[i].p1;
     pt = points[pindex].x;
@@ -2919,11 +2977,11 @@ void FixSurfaceGlobal::move_transrotate(int imotion, int i)
       pointmove[pindex] = 1;
     }
 
-  } else {    
+  } else {
     pindex = tris[i].p1;
     pt = points[pindex].x;
     if (!pointmove[pindex]) {
-      move_rotate_point(pindex,rpoint,runit,cosine,sine); 
+      move_rotate_point(pindex,rpoint,runit,cosine,sine);
       if (vxflag) pt[0] += vx * delta;
       if (vyflag) pt[1] += vy * delta;
       if (vzflag) pt[2] += vz * delta;
@@ -2950,7 +3008,7 @@ void FixSurfaceGlobal::move_transrotate(int imotion, int i)
   }
 
   // xsurf and vsurf
-  
+
   double ddotr;
   double a[3],b[3],c[3],d[3],disp[3];
 
@@ -2970,7 +3028,7 @@ void FixSurfaceGlobal::move_transrotate(int imotion, int i)
   disp[0] = a[0]*cosine  + b[0]*sine;
   disp[1] = a[1]*cosine  + b[1]*sine;
   disp[2] = a[2]*cosine  + b[2]*sine;
-  
+
   xsurf[i][0] = rpoint[0] + c[0] + disp[0];
   xsurf[i][1] = rpoint[1] + c[1] + disp[1];
   xsurf[i][2] = rpoint[2] + c[2] + disp[2];
@@ -2984,7 +3042,7 @@ void FixSurfaceGlobal::move_transrotate(int imotion, int i)
   if (vxflag) vsurf[i][0] += vx;
   if (vyflag) vsurf[i][1] += vy;
   if (vzflag) vsurf[i][2] += vz;
-  
+
   // normals
 
   double p12[3],p13[3];
@@ -2997,7 +3055,7 @@ void FixSurfaceGlobal::move_transrotate(int imotion, int i)
     MathExtra::sub3(p2,p1,p12);
     MathExtra::cross3(zunit,p12,lines[i].norm);
     MathExtra::norm3(lines[i].norm);
-    
+
   } else {
     p1 = points[tris[i].p1].x;
     p2 = points[tris[i].p2].x;
@@ -3017,7 +3075,7 @@ void FixSurfaceGlobal::move_rotate_point(int i, double *rpoint, double *runit,
 					 double cosine, double sine)
 {
   double a[3],b[3],c[3],d[3],disp[3];
-  
+
   d[0] = points_original[i][0] - rpoint[0];
   d[1] = points_original[i][1] - rpoint[1];
   d[2] = points_original[i][2] - rpoint[2];
@@ -3042,3 +3100,51 @@ void FixSurfaceGlobal::move_rotate_point(int i, double *rpoint, double *runit,
   pt[2] = rpoint[2] + c[2] + disp[2];
 }
 
+/* ----------------------------------------------------------------------
+   walk through flat connections to reduce interaction to one force
+     take maximum overlap and average normal direction
+------------------------------------------------------------------------- */
+
+void FixSurfaceGlobal::walk_flat_connections2d(int j, std::unordered_set<int>
+					 *processed_contacts, std::unordered_set<int>
+					 *current_contacts, ContactForce *contact_force)
+{
+  // Find geometry of current flat surf and process
+  int n;
+  processed_contacts->insert(j);
+  for (n = 0; n < nmax_contact_surfs; n++)
+    if (contact_surfs[n].index == j) break;
+
+  if (n == nmax_contact_forces)
+    error->one(FLERR, "Failed to find contacting surface");
+
+  contact_force->nsurfs += 1;
+  contact_force->overlap = MAX(contact_force->overlap, contact_surfs[n].overlap);
+  contact_force->r[0] += contact_surfs[n].r[0];
+  contact_force->r[1] += contact_surfs[n].r[1];
+  contact_force->r[2] += contact_surfs[n].r[2];
+
+  // Find flat connections
+  int k, aflag;
+  for (int m = 0; m < (connect2d[j].np1 + connect2d[j].np2); m++) {
+    if (m < connect2d[j].np1) {
+      k = connect2d[j].neigh_p1[m];
+      aflag = connect2d[j].aflag_p1[m];
+    } else {
+      k = connect2d[j].neigh_p2[m - connect2d[j].np1];
+      aflag = connect2d[j].aflag_p2[m - connect2d[j].np1];
+    }
+
+    // Skip if not in contact
+    if (current_contacts->find(k) != current_contacts->end())
+      continue;
+
+    // Skip if processed
+    if (processed_contacts->find(k) != processed_contacts->end())
+      continue;
+
+    // Walk if flat, otherwise process later
+    if (aflag == FLAT)
+      walk_flat_connections2d(k, processed_contacts, current_contacts, contact_force);
+  }
+}
