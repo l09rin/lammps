@@ -19,17 +19,17 @@ Syntax
 
        *input* args = source source-args
          *source* = *mol* or *stl*
-	    *mol* arg = template-ID
+            *mol* arg = template-ID
                template-ID = ID of molecule template specified in a
-	       separate :doc:`molecule <molecule>` command, which defines a set of triangles or lines
+               separate :doc:`molecule <molecule>` command, which defines a set of triangles or lines
             *stl* args = stype stlfile
-	       stype = numeric type assigned to all triangles in STL file
-	       stlfile = STL filename which defines a set of triangles
+               stype = numeric type assigned to all triangles in STL file
+               stlfile = STL filename which defines a set of triangles
 
 * model = one or more model keywords can be specified
 
   .. parsed-literal::
-     
+
         *model* args = ptype stype fstyle fstyle-args
            ptype = numeric particle type (see asterisk form below)
            stype = numeric surface type (see asterisk form below)
@@ -52,7 +52,7 @@ Syntax
        *smaxtype* value = maximum surface type allowed
        *flat* value = maximum angle (degrees) between a pair of connected triangles/lines for a flat connection
        *temperature* value = surface temperature (degrees Kelvin), required if model with heat is used
-	     
+
 Examples
 """"""""
 
@@ -264,7 +264,7 @@ surfaces which are within a geometric region.  Their syntax is as follows:
            *variable* args = v_dx v_dy v_dz v_vx v_vy v_vz
        *type/region* values = stype region-ID
          stype = numeric surface type
-	 region-ID = ID of a region previously defined by the :doc:`region <region>` command
+         region-ID = ID of a region previously defined by the :doc:`region <region>` command
 
 The *stype* argument can specify one or more surface types.  It must
 specify all the surface types within a connecte object(s).  If an
@@ -323,7 +323,7 @@ Examples for both keywords are as follows:
    fix_modify 1 move 2 rotate 0 0 0 0 0 1 25
    fix_modify 1 move 1,3*5,8* rotate 0 0 0 0 0 1 25
    fix_modify 1 type/region 3 myBlock
-   
+
 No global or per-atom quantities are stored by this fix for access by
 various :doc:`output commands <Howto_output>`.  No parameter of this
 fix can be used with the *start/stop* keywords of the :doc:`run <run>`

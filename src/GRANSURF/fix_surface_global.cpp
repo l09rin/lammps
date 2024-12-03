@@ -117,14 +117,14 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
     if (strcmp(arg[iarg],"input") == 0) {
       if (iarg+2 > narg) error->all(FLERR,"Illegal fix surface/global command");
       if (strcmp(arg[iarg+1],"mol") == 0) {
-	if (iarg+3 > narg) error->all(FLERR,"Illegal fix surface/global command");
-	extract_from_molecule(arg[iarg+2],hash);
-	iarg += 3;
+        if (iarg+3 > narg) error->all(FLERR,"Illegal fix surface/global command");
+        extract_from_molecule(arg[iarg+2],hash);
+        iarg += 3;
       } else if (strcmp(arg[iarg+1],"stl") == 0) {
-	if (iarg+4 > narg) error->all(FLERR,"Illegal fix surface/global command");
-	int stype = utils::inumeric(FLERR,arg[iarg+2],false,lmp);
-	extract_from_stlfile(arg[iarg+3],stype,hash);
-	iarg += 4;
+        if (iarg+4 > narg) error->all(FLERR,"Illegal fix surface/global command");
+        int stype = utils::inumeric(FLERR,arg[iarg+2],false,lmp);
+        extract_from_stlfile(arg[iarg+3],stype,hash);
+        iarg += 4;
       } else error->all(FLERR,"Illegal fix surface/global command");
     } else break;
 
@@ -147,12 +147,12 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
       if (iarg+4 > narg) error->all(FLERR,"Illegal fix surface/global command");
 
       if (nmodel == maxmodel) {
-	maxmodel += DELTAMODEL;
-	modeltypes = (ModelTypes *)
-	  memory->srealloc(models,maxmodel*sizeof(ModelTypes),"surf/gloabl:modeltypes");
-	models = (Granular_NS::GranularModel **)
-	  memory->srealloc(models,maxmodel*sizeof(Granular_NS::GranularModel *),
-			   "surf/gloabl:models");
+        maxmodel += DELTAMODEL;
+        modeltypes = (ModelTypes *)
+          memory->srealloc(models,maxmodel*sizeof(ModelTypes),"surf/gloabl:modeltypes");
+        models = (Granular_NS::GranularModel **)
+          memory->srealloc(models,maxmodel*sizeof(Granular_NS::GranularModel *),
+                           "surf/gloabl:models");
       }
 
       models[nmodel] = model = new GranularModel(lmp);
@@ -161,9 +161,9 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
       // ues MAXSURFTYPE for now, in case smax keyword extends input surf types
 
       utils::bounds(FLERR, arg[iarg+1], 1, atom->ntypes,
-		    modeltypes[nmodel].plo, modeltypes[nmodel].phi, error);
+                    modeltypes[nmodel].plo, modeltypes[nmodel].phi, error);
       utils::bounds(FLERR, arg[iarg+2], 1, MAXSURFTYPE,
-		    modeltypes[nmodel].slo, modeltypes[nmodel].shi, error);
+                    modeltypes[nmodel].slo, modeltypes[nmodel].shi, error);
       nmodel++;
 
       model->contact_type = SURFACE;
@@ -173,30 +173,30 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
       iarg += 3;
 
       if (classic_flag) {
-	iarg = model->define_classic_model(arg, iarg, narg);
-	if (iarg < narg && strcmp(arg[iarg],"limit_damping") == 0) {
-	  model->limit_damping = 1;
-	  iarg++;
-	}
+        iarg = model->define_classic_model(arg, iarg, narg);
+        if (iarg < narg && strcmp(arg[iarg],"limit_damping") == 0) {
+          model->limit_damping = 1;
+          iarg++;
+        }
       } else {
-	iarg = model->add_sub_model(arg, iarg, narg, NORMAL);
-	while (iarg < narg) {
-	  if (strcmp(arg[iarg], "damping") == 0) {
-	    iarg = model->add_sub_model(arg, iarg + 1, narg, DAMPING);
-	  } else if (strcmp(arg[iarg], "tangential") == 0) {
-	    iarg = model->add_sub_model(arg, iarg + 1, narg, TANGENTIAL);
-	  } else if (strcmp(arg[iarg], "rolling") == 0) {
-	    iarg = model->add_sub_model(arg, iarg + 1, narg, ROLLING);
-	  } else if (strcmp(arg[iarg], "twisting") == 0) {
-	    iarg = model->add_sub_model(arg, iarg + 1, narg, TWISTING);
-	  } else if (strcmp(arg[iarg], "heat") == 0) {
-	    iarg = model->add_sub_model(arg, iarg + 1, narg, HEAT);
-	    heat_flag = 1;
-	  } else if (strcmp(arg[iarg],"limit_damping") == 0) {
-	    model->limit_damping = 1;
-	    iarg++;
-	  } else break;
-	}
+        iarg = model->add_sub_model(arg, iarg, narg, NORMAL);
+        while (iarg < narg) {
+          if (strcmp(arg[iarg], "damping") == 0) {
+            iarg = model->add_sub_model(arg, iarg + 1, narg, DAMPING);
+          } else if (strcmp(arg[iarg], "tangential") == 0) {
+            iarg = model->add_sub_model(arg, iarg + 1, narg, TANGENTIAL);
+          } else if (strcmp(arg[iarg], "rolling") == 0) {
+            iarg = model->add_sub_model(arg, iarg + 1, narg, ROLLING);
+          } else if (strcmp(arg[iarg], "twisting") == 0) {
+            iarg = model->add_sub_model(arg, iarg + 1, narg, TWISTING);
+          } else if (strcmp(arg[iarg], "heat") == 0) {
+            iarg = model->add_sub_model(arg, iarg + 1, narg, HEAT);
+            heat_flag = 1;
+          } else if (strcmp(arg[iarg],"limit_damping") == 0) {
+            model->limit_damping = 1;
+            iarg++;
+          } else break;
+        }
       }
 
       // define default damping sub model
@@ -243,16 +243,16 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
       if (iarg+2 > narg) error->all(FLERR,"Illegal fix surface/global command");
       int smaxtype = utils::inumeric(FLERR,arg[iarg+1],false,lmp);
       if (smaxtype > MAXSURFTYPE)
-	error->all(FLERR,"Fix surface/global smaxtype > MAXSURFTYPE");
+        error->all(FLERR,"Fix surface/global smaxtype > MAXSURFTYPE");
       if (smaxtype < maxsurftype)
-	error->all(FLERR,"Fix surface/global smaxtype < input surf types");
+        error->all(FLERR,"Fix surface/global smaxtype < input surf types");
       maxsurftype = smaxtype;
       iarg += 2;
     } else if (strcmp(arg[iarg],"flag") == 0) {
       if (iarg+2 > narg) error->all(FLERR,"Illegal fix surface/global command");
       double flat = utils::numeric(FLERR,arg[iarg+1],false,lmp);
       if (flat < 0.0 || flat > 90.0)
-	error->all(FLERR,"Invalid value for fix surface/global flat");
+        error->all(FLERR,"Invalid value for fix surface/global flat");
       flatthresh = 1.0 - cos(MY_PI*flat/180.0);
       iarg += 2;
     } else if (strcmp(arg[iarg],"temperature") == 0) {
@@ -287,12 +287,12 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
   for (int m = 0; m < nmodel; m++)
     for (int i = modeltypes[m].plo; i <= modeltypes[m].phi; i++)
       for (int j = modeltypes[m].slo; j <= modeltypes[m].shi; j++)
-	types2model[i][j] = models[m];
+        types2model[i][j] = models[m];
 
   for (int i = 1; i <= atom->ntypes; i++)
     for (int j = 1; j <= maxsurftype; j++)
       if (!types2model[i][j])
-	error->all(FLERR,"Fix surface/global type pair is missing a granular model");
+        error->all(FLERR,"Fix surface/global type pair is missing a granular model");
 
   // initializations
 
@@ -528,8 +528,8 @@ void FixSurfaceGlobal::init()
       error->all(FLERR, "Variable {} for fix surface/global does not exist", tstr);
     if (! input->variable->equalstyle(tvar))
       error->all(FLERR,
-		 "Variable {} for fix surface/global must be an equal style variable",
-		 tstr);
+                 "Variable {} for fix surface/global must be an equal style variable",
+                 tstr);
   }
 
   // initialize pointmove settings
@@ -1122,42 +1122,42 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
 
     if (strcmp(arg[2],"none") == 0) {
       for (int itype = 1; itype <= maxsurftype; itype++) {
-	if (type2motion[itype] < 0) continue;
-	int imotion = type2motion[itype];
-	motions[imotion].active = 0;
-	type2motion[itype] = -1;
+        if (type2motion[itype] < 0) continue;
+        int imotion = type2motion[itype];
+        motions[imotion].active = 0;
+        type2motion[itype] = -1;
 
-	// set vsurf and omegasurf to zero for itype surfs
+        // set vsurf and omegasurf to zero for itype surfs
 
-	int stype;
-	for (int i = 0; i < nsurf; i++) {
-	  if (dimension == 2) stype = lines[i].type;
-	  else stype = tris[i].type;
-	  if (stype == itype) {
-	    vsurf[i][0] = vsurf[i][1] = vsurf[i][2] = 0.0;
-	    omegasurf[i][0] = omegasurf[i][1] = omegasurf[i][2] = 0.0;
-	  }
-	}
+        int stype;
+        for (int i = 0; i < nsurf; i++) {
+          if (dimension == 2) stype = lines[i].type;
+          else stype = tris[i].type;
+          if (stype == itype) {
+            vsurf[i][0] = vsurf[i][1] = vsurf[i][2] = 0.0;
+            omegasurf[i][0] = omegasurf[i][1] = omegasurf[i][2] = 0.0;
+          }
+        }
       }
 
       anymove = 0;
       for (int i = 1; i <= maxsurftype; i++)
-	if (type2motion[i] >= 0) anymove = 1;
+        if (type2motion[i] >= 0) anymove = 1;
 
       if (!anymove) {
-	memory->destroy(points_lastneigh);
-	memory->destroy(points_original);
-	memory->destroy(xsurf_original);
-	memory->destroy(pointmove);
-	points_lastneigh = nullptr;
-	points_original = nullptr;
-	xsurf_original = nullptr;
-	pointmove = nullptr;
+        memory->destroy(points_lastneigh);
+        memory->destroy(points_original);
+        memory->destroy(xsurf_original);
+        memory->destroy(pointmove);
+        points_lastneigh = nullptr;
+        points_original = nullptr;
+        xsurf_original = nullptr;
+        pointmove = nullptr;
 
-	int ifix = modify->find_fix(id);
-	modify->fmask[ifix] &= ~INITIAL_INTEGRATE;
-	force_reneighbor = 0;
-	next_reneighbor = -1;
+        int ifix = modify->find_fix(id);
+        modify->fmask[ifix] &= ~INITIAL_INTEGRATE;
+        force_reneighbor = 0;
+        next_reneighbor = -1;
       }
 
       delete [] stypes;
@@ -1173,9 +1173,9 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
 
     if (imotion == nmotion) {
       if (nmotion == maxmotion) {
-	maxmotion += DELTAMOTION;
-	motions = (Motion *)
-	  memory->srealloc(motions,maxmotion*sizeof(Motion),"surface/global:motion");
+        maxmotion += DELTAMOTION;
+        motions = (Motion *)
+          memory->srealloc(motions,maxmotion*sizeof(Motion),"surface/global:motion");
       }
       nmotion++;
     }
@@ -1222,27 +1222,27 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
       if (!stypes[itype]) continue;
 
       if (dimension == 2) {
-	p1 = lines[i].p1;
-	p2 = lines[i].p2;
-	points_lastneigh[p1][0] = points_original[p1][0] = points[p1].x[0];
-	points_lastneigh[p1][1] = points_original[p1][1] = points[p1].x[1];
-	points_lastneigh[p1][2] = points_original[p1][2] = points[p1].x[2];
-	points_lastneigh[p2][0] = points_original[p2][0] = points[p2].x[0];
-	points_lastneigh[p2][1] = points_original[p2][1] = points[p2].x[1];
-	points_lastneigh[p2][2] = points_original[p2][2] = points[p2].x[2];
+        p1 = lines[i].p1;
+        p2 = lines[i].p2;
+        points_lastneigh[p1][0] = points_original[p1][0] = points[p1].x[0];
+        points_lastneigh[p1][1] = points_original[p1][1] = points[p1].x[1];
+        points_lastneigh[p1][2] = points_original[p1][2] = points[p1].x[2];
+        points_lastneigh[p2][0] = points_original[p2][0] = points[p2].x[0];
+        points_lastneigh[p2][1] = points_original[p2][1] = points[p2].x[1];
+        points_lastneigh[p2][2] = points_original[p2][2] = points[p2].x[2];
       } else {
-	p1 = tris[i].p1;
-	p2 = tris[i].p2;
-	p3 = tris[i].p3;
-	points_lastneigh[p1][0] = points_original[p1][0] = points[p1].x[0];
-	points_lastneigh[p1][1] = points_original[p1][1] = points[p1].x[1];
-	points_lastneigh[p1][2] = points_original[p1][2] = points[p1].x[2];
-	points_lastneigh[p2][0] = points_original[p2][0] = points[p2].x[0];
-	points_lastneigh[p2][1] = points_original[p2][1] = points[p2].x[1];
-	points_lastneigh[p2][2] = points_original[p2][2] = points[p2].x[2];
-	points_lastneigh[p3][0] = points_original[p3][0] = points[p3].x[0];
-	points_lastneigh[p3][1] = points_original[p3][1] = points[p3].x[1];
-	points_lastneigh[p3][2] = points_original[p3][2] = points[p3].x[2];
+        p1 = tris[i].p1;
+        p2 = tris[i].p2;
+        p3 = tris[i].p3;
+        points_lastneigh[p1][0] = points_original[p1][0] = points[p1].x[0];
+        points_lastneigh[p1][1] = points_original[p1][1] = points[p1].x[1];
+        points_lastneigh[p1][2] = points_original[p1][2] = points[p1].x[2];
+        points_lastneigh[p2][0] = points_original[p2][0] = points[p2].x[0];
+        points_lastneigh[p2][1] = points_original[p2][1] = points[p2].x[1];
+        points_lastneigh[p2][2] = points_original[p2][2] = points[p2].x[2];
+        points_lastneigh[p3][0] = points_original[p3][0] = points[p3].x[0];
+        points_lastneigh[p3][1] = points_original[p3][1] = points[p3].x[1];
+        points_lastneigh[p3][2] = points_original[p3][2] = points[p3].x[2];
       }
 
       xsurf_original[i][0] = xsurf[i][0];
@@ -1250,11 +1250,11 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
       xsurf_original[i][2] = xsurf[i][2];
 
       if (mstyle == ROTATE || mstyle == TRANSROT) {
-	omega = motions[imotion].omega;
-	runit = motions[imotion].unit;
-	omegasurf[i][0] = omega*runit[0];
-	omegasurf[i][1] = omega*runit[1];
-	omegasurf[i][2] = omega*runit[2];
+        omega = motions[imotion].omega;
+        runit = motions[imotion].unit;
+        omegasurf[i][0] = omega*runit[0];
+        omegasurf[i][1] = omega*runit[1];
+        omegasurf[i][2] = omega*runit[2];
       }
     }
 
@@ -1276,12 +1276,12 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
 
     if (dimension == 2) {
       for (int i = 0; i < nlines; i++)
-	if (region->match(xsurf[i][0],xsurf[i][1],xsurf[i][2]))
-	  lines[i].type = stype;
+        if (region->match(xsurf[i][0],xsurf[i][1],xsurf[i][2]))
+          lines[i].type = stype;
     } else {
       for (int i = 0; i < ntris; i++)
-	if (region->match(xsurf[i][0],xsurf[i][1],xsurf[i][2]))
-	  tris[i].type = stype;
+        if (region->match(xsurf[i][0],xsurf[i][1],xsurf[i][2]))
+          tris[i].type = stype;
     }
 
     return 3;
@@ -1391,7 +1391,7 @@ int FixSurfaceGlobal::modify_param_move(Motion *motion, int narg, char **arg)
     motion->mstyle = TRANSROT;
 
     error->all(FLERR,
-	       "Fix_modify move transrot not yet supported for fix surface/global");
+               "Fix_modify move transrot not yet supported for fix surface/global");
 
     motion->vxflag = motion->vyflag = motion->vzflag = 1;
     motion->vx = utils::numeric(FLERR, arg[1], false, lmp);
@@ -1434,7 +1434,7 @@ int FixSurfaceGlobal::modify_param_move(Motion *motion, int narg, char **arg)
     motion->mstyle = TRANSROT;
 
     error->all(FLERR,
-	       "Fix_modify move variable not yet supported for fix surface/global");
+               "Fix_modify move variable not yet supported for fix surface/global");
     return 7;
   }
 
@@ -2323,30 +2323,30 @@ void FixSurfaceGlobal::connectivity3d()
       MathExtra::sub3(points[tris[i].p2].x,points[tris[i].p1].x,iedge);
 
       if ((jpfirst == 1 && jpsecond == 2) ||
-	  (jpfirst == 2 && jpsecond == 3) ||
-	  (jpfirst == 3 && jpsecond == 1)) {
-	connect3d[i].ewhich_e1[m] = jpfirst - 1;
-	connect3d[i].nside_e1[m] = OPPOSITE_SIDE;
-	if (dotnorm < -1.0+flatthresh) connect3d[i].aflag_e1[m] = FLAT;
-	else {
-	  MathExtra::cross3(inorm,jnorm,icrossj);
-	  if (MathExtra::dot3(icrossj,iedge) > 0.0)
-	    connect3d[i].aflag_e1[m] = CONCAVE;
-	  else
-	    connect3d[i].aflag_e1[m] = CONVEX;
-	}
+          (jpfirst == 2 && jpsecond == 3) ||
+          (jpfirst == 3 && jpsecond == 1)) {
+        connect3d[i].ewhich_e1[m] = jpfirst - 1;
+        connect3d[i].nside_e1[m] = OPPOSITE_SIDE;
+        if (dotnorm < -1.0+flatthresh) connect3d[i].aflag_e1[m] = FLAT;
+        else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+          if (MathExtra::dot3(icrossj,iedge) > 0.0)
+            connect3d[i].aflag_e1[m] = CONCAVE;
+          else
+            connect3d[i].aflag_e1[m] = CONVEX;
+        }
       } else {
-	if (jpfirst == 2) connect3d[i].ewhich_e1[m] = 0;
-	else if (jpfirst == 3) connect3d[i].ewhich_e1[m] = 1;
-	else if (jpfirst == 1) connect3d[i].ewhich_e1[m] = 2;
-	connect3d[i].nside_e1[m] = SAME_SIDE;
+        if (jpfirst == 2) connect3d[i].ewhich_e1[m] = 0;
+        else if (jpfirst == 3) connect3d[i].ewhich_e1[m] = 1;
+        else if (jpfirst == 1) connect3d[i].ewhich_e1[m] = 2;
+        connect3d[i].nside_e1[m] = SAME_SIDE;
         if (dotnorm > 1.0-flatthresh) connect3d[i].aflag_e1[m] = FLAT;
         else {
           MathExtra::cross3(inorm,jnorm,icrossj);
           if (MathExtra::dot3(icrossj,iedge) < 0.0)
-	    connect3d[i].aflag_e1[m] = CONCAVE;
+            connect3d[i].aflag_e1[m] = CONCAVE;
           else
-	    connect3d[i].aflag_e1[m] = CONVEX;
+            connect3d[i].aflag_e1[m] = CONVEX;
         }
       }
     }
@@ -2368,30 +2368,30 @@ void FixSurfaceGlobal::connectivity3d()
       MathExtra::sub3(points[tris[i].p3].x,points[tris[i].p2].x,iedge);
 
       if ((jpfirst == 1 && jpsecond == 2) ||
-	  (jpfirst == 2 && jpsecond == 3) ||
-	  (jpfirst == 3 && jpsecond == 1)) {
-	connect3d[i].ewhich_e2[m] = jpfirst - 1;
-	connect3d[i].nside_e2[m] = OPPOSITE_SIDE;
-	if (dotnorm < -1.0+flatthresh) connect3d[i].aflag_e2[m] = FLAT;
-	else {
-	  MathExtra::cross3(inorm,jnorm,icrossj);
-	  if (MathExtra::dot3(icrossj,iedge) > 0.0)
-	    connect3d[i].aflag_e2[m] = CONCAVE;
-	  else
-	    connect3d[i].aflag_e2[m] = CONVEX;
-	}
+          (jpfirst == 2 && jpsecond == 3) ||
+          (jpfirst == 3 && jpsecond == 1)) {
+        connect3d[i].ewhich_e2[m] = jpfirst - 1;
+        connect3d[i].nside_e2[m] = OPPOSITE_SIDE;
+        if (dotnorm < -1.0+flatthresh) connect3d[i].aflag_e2[m] = FLAT;
+        else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+          if (MathExtra::dot3(icrossj,iedge) > 0.0)
+            connect3d[i].aflag_e2[m] = CONCAVE;
+          else
+            connect3d[i].aflag_e2[m] = CONVEX;
+        }
       } else {
-	if (jpfirst == 2) connect3d[i].ewhich_e2[m] = 0;
-	else if (jpfirst == 3) connect3d[i].ewhich_e2[m] = 1;
-	else if (jpfirst == 1) connect3d[i].ewhich_e2[m] = 2;
-	connect3d[i].nside_e2[m] = SAME_SIDE;
+        if (jpfirst == 2) connect3d[i].ewhich_e2[m] = 0;
+        else if (jpfirst == 3) connect3d[i].ewhich_e2[m] = 1;
+        else if (jpfirst == 1) connect3d[i].ewhich_e2[m] = 2;
+        connect3d[i].nside_e2[m] = SAME_SIDE;
         if (dotnorm > 1.0-flatthresh) connect3d[i].aflag_e2[m] = FLAT;
         else {
           MathExtra::cross3(inorm,jnorm,icrossj);
           if (MathExtra::dot3(icrossj,iedge) < 0.0)
-	    connect3d[i].aflag_e2[m] = CONCAVE;
+            connect3d[i].aflag_e2[m] = CONCAVE;
           else
-	    connect3d[i].aflag_e2[m] = CONVEX;
+            connect3d[i].aflag_e2[m] = CONVEX;
         }
       }
     }
@@ -2413,30 +2413,30 @@ void FixSurfaceGlobal::connectivity3d()
       MathExtra::sub3(points[tris[i].p1].x,points[tris[i].p3].x,iedge);
 
       if ((jpfirst == 1 && jpsecond == 2) ||
-	  (jpfirst == 2 && jpsecond == 3) ||
-	  (jpfirst == 3 && jpsecond == 1)) {
-	connect3d[i].ewhich_e3[m] = jpfirst - 1;
-	connect3d[i].nside_e3[m] = OPPOSITE_SIDE;
-	if (dotnorm < -1.0+flatthresh) connect3d[i].aflag_e3[m] = FLAT;
-	else {
-	  MathExtra::cross3(inorm,jnorm,icrossj);
-	  if (MathExtra::dot3(icrossj,iedge) > 0.0)
-	    connect3d[i].aflag_e3[m] = CONCAVE;
-	  else
-	    connect3d[i].aflag_e3[m] = CONVEX;
-	}
+          (jpfirst == 2 && jpsecond == 3) ||
+          (jpfirst == 3 && jpsecond == 1)) {
+        connect3d[i].ewhich_e3[m] = jpfirst - 1;
+        connect3d[i].nside_e3[m] = OPPOSITE_SIDE;
+        if (dotnorm < -1.0+flatthresh) connect3d[i].aflag_e3[m] = FLAT;
+        else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+          if (MathExtra::dot3(icrossj,iedge) > 0.0)
+            connect3d[i].aflag_e3[m] = CONCAVE;
+          else
+            connect3d[i].aflag_e3[m] = CONVEX;
+        }
       } else {
-	if (jpfirst == 2) connect3d[i].ewhich_e3[m] = 0;
-	else if (jpfirst == 3) connect3d[i].ewhich_e3[m] = 1;
-	else if (jpfirst == 1) connect3d[i].ewhich_e3[m] = 2;
-	connect3d[i].nside_e3[m] = SAME_SIDE;
+        if (jpfirst == 2) connect3d[i].ewhich_e3[m] = 0;
+        else if (jpfirst == 3) connect3d[i].ewhich_e3[m] = 1;
+        else if (jpfirst == 1) connect3d[i].ewhich_e3[m] = 2;
+        connect3d[i].nside_e3[m] = SAME_SIDE;
         if (dotnorm > 1.0-flatthresh) connect3d[i].aflag_e3[m] = FLAT;
         else {
           MathExtra::cross3(inorm,jnorm,icrossj);
-	  if (MathExtra::dot3(icrossj,iedge) < 0.0)
-	    connect3d[i].aflag_e3[m] = CONCAVE;
+          if (MathExtra::dot3(icrossj,iedge) < 0.0)
+            connect3d[i].aflag_e3[m] = CONCAVE;
           else
-	    connect3d[i].aflag_e3[m] = CONVEX;
+            connect3d[i].aflag_e3[m] = CONVEX;
         }
       }
     }
@@ -3074,7 +3074,7 @@ void FixSurfaceGlobal::move_transrotate(int imotion, int i)
 /* ------------------------------------------------------------------------- */
 
 void FixSurfaceGlobal::move_rotate_point(int i, double *rpoint, double *runit,
-					 double cosine, double sine)
+                                         double cosine, double sine)
 {
   double a[3],b[3],c[3],d[3],disp[3];
 
@@ -3108,8 +3108,8 @@ void FixSurfaceGlobal::move_rotate_point(int i, double *rpoint, double *runit,
 ------------------------------------------------------------------------- */
 
 void FixSurfaceGlobal::walk_flat_connections2d(int j, std::unordered_set<int>
-					 *processed_contacts, std::map<int, int>
-					 *contacts_map, ContactForce *contact_force)
+                                         *processed_contacts, std::map<int, int>
+                                         *contacts_map, ContactForce *contact_force)
 {
   // Find geometry of current flat surf and process
   processed_contacts->insert(j);
