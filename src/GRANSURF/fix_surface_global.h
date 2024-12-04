@@ -98,19 +98,26 @@ class FixSurfaceGlobal : public Fix {
     int mstyle;
     int vxflag,vyflag,vzflag;
     int axflag,ayflag,azflag;
+    int xvar,yvar,zvar;
+    int vxvar,vyvar,vzvar;
     double vx,vy,vz;
     double ax,ay,az;
+    double dx,dy,dz;
     double period;
     double point[3],axis[3],unit[3];
     double omega;
+    char *xvarstr,*yvarstr,*zvarstr;
+    char *vxvarstr,*vyvarstr,*vzvarstr;
     double time_origin;
   };
 
-  struct Motion *motions;
-  int nmotion,maxmotion;
-  int anymove;
+  struct Motion *motions;  // list of defined motions, can be flagged inactive
+  int nmotion,maxmotion;   // # of defined motions versus allocated size
+  int anymove;             // 1 if any surf motion is enabled
+  int anymove_variable;    // 1 if any surf motion is style VARIABLE
 
-  int *type2motion;
+  int *type2motion;        // assingment of surf types (1 to Ntype) to motions
+                           // -1 = non-moving surf type
 
   double **points_original,**xsurf_original;
   double **points_lastneigh;
@@ -286,6 +293,7 @@ class FixSurfaceGlobal : public Fix {
   void move_rotate(int, int);
   void move_transrotate(int, int);
   void move_rotate_point(int, double *, double *, double, double);
+  void move_variable(int, int);
 };
 
 }    // namespace LAMMPS_NS

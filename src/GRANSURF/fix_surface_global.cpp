@@ -12,14 +12,14 @@
    See the README file in the top-level LAMMPS directory.
 ------------------------------------------------------------------------- */
 
-// Conceptual issues
+// Conceptual decisions
 // NOTE: allow for multiple instances of this fix or not ?
-// NOTE: warn for too-small lines - how to know smallest particle size ?
+// NOTE: warn for too-small lines - but how to know smallest particle size ?
 // NOTE: alter connection info if 2 lines/tris are different types ?
 // NOTE: should this fix produce any output
 //         global array with force on each surf
-//         or global array of forces per molecule ID (consecutive) ?
-//         ditto for particle contact counts ?
+//         or global array of forces per molecule ID (assuemd consecutive) ?
+//         or global vector of per-surf particle contact counts ?
 // NOTE: what about reduced vs box units in fix_modify move params like fix_move ?
 // NOTE: what about PBC
 //       connection finding, for moving surfs, surfs which overlap PBC
@@ -28,14 +28,14 @@
 //       to enable some particles to pass thru some surfs
 
 // Performance improvements
-// NOTE: optimal access to velocity of each surf
+// NOTE: optimal access to velocity of each surf, depends on motion
 // NOTE: need to order connections with FLAT first ?
 // NOTE: more efficient neighbor lists, see Joel's 18 Nov email for ideas
 
-// NOTE: enable fix move variable style for equal-style vars only ?
-
 // doc: can use scale keyword in the molecule command for lines/tris
 // doc: molID warning - rules of thumb for mols and types of each surf
+// doc: how VARIABLE works, a little diff versus fix move, which can use forces to time-integrate
+//      only for equal-style vars
 
 #include "fix_surface_global.h"
 
@@ -306,7 +306,7 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
 
   nmotion = maxmotion = 0;
   motions = NULL;
-  anymove = 0;
+  anymove = anymove_variable = 0;
 
   points_lastneigh = nullptr;
   points_original = nullptr;
@@ -445,6 +445,17 @@ FixSurfaceGlobal::~FixSurfaceGlobal()
 
   memory->destroy(mass_rigid);
 
+  for (int i = 0; i < nmotion; i++) {
+    if (motions[i].mstyle == VARIABLE) {
+      delete [] motions[i].xvarstr;
+      delete [] motions[i].yvarstr;
+      delete [] motions[i].zvarstr;
+      delete [] motions[i].vxvarstr;
+      delete [] motions[i].vyvarstr;
+      delete [] motions[i].vzvarstr;
+    }
+  }
+  
   memory->sfree(motions);
   delete [] type2motion;
 
@@ -541,6 +552,57 @@ void FixSurfaceGlobal::init()
                  tstr);
   }
 
+  // check on motion variables
+
+  for (int i = 0; i < nmotion; i++) {
+    Motion *motion = &motions[i];
+    if (motion->mstyle != VARIABLE) continue;
+    
+    if (motion->xvarstr) {
+      motion->xvar = input->variable->find(motion->xvarstr);
+      if (motion->xvar < 0)
+        error->all(FLERR, "Variable name for fix_modify move does not exist");
+      if (!input->variable->equalstyle(motion->xvar))
+        error->all(FLERR, "Variable for fix_modify move must be equal style");
+    }
+    if (motion->yvarstr) {
+      motion->yvar = input->variable->find(motion->yvarstr);
+      if (motion->yvar < 0)
+        error->all(FLERR, "Variable name for fix_modify move does not exist");
+      if (!input->variable->equalstyle(motion->yvar))
+        error->all(FLERR, "Variable for fix_modify move must be equal style");
+    }
+    if (motion->zvarstr) {
+      motion->zvar = input->variable->find(motion->zvarstr);
+      if (motion->zvar < 0)
+        error->all(FLERR, "Variable name for fix_modify move does not exist");
+      if (!input->variable->equalstyle(motion->zvar))
+        error->all(FLERR, "Variable for fix_modify move must be equal style");
+    }
+
+    if (motion->vxvarstr) {
+      motion->vxvar = input->variable->find(motion->vxvarstr);
+      if (motion->vxvar < 0)
+        error->all(FLERR, "Variable name for fix_modify move does not exist");
+      if (!input->variable->equalstyle(motion->vxvar))
+        error->all(FLERR, "Variable for fix_modify move must be equal style");
+    }
+    if (motion->vyvarstr) {
+      motion->vyvar = input->variable->find(motion->vyvarstr);
+      if (motion->vyvar < 0)
+        error->all(FLERR, "Variable name for fix_modify move does not exist");
+      if (!input->variable->equalstyle(motion->vyvar))
+        error->all(FLERR, "Variable for fix_modify move must be equal style");
+    }
+    if (motion->vzvarstr) {
+      motion->vzvar = input->variable->find(motion->vzvarstr);
+      if (motion->vzvar < 0)
+        error->all(FLERR, "Variable name for fix_modify move does not exist");
+      if (!input->variable->equalstyle(motion->vzvar))
+        error->all(FLERR, "Variable for fix_modify move must be equal style");
+    }
+  }
+
   // initialize pointmove settings
   // fix_modify move can be set between runs
 
@@ -565,6 +627,23 @@ void FixSurfaceGlobal::initial_integrate(int vflag)
 {
   int imotion,mstyle;
 
+  // invoke variables for any VARIABLE style motion
+
+  if (anymove_variable) {
+    for (int i = 0; i < nmotion; i++) {
+      Motion *motion = &motions[i];
+      if (motion->mstyle != VARIABLE) continue;
+      if (motion->xvarstr) motion->dx = input->variable->compute_equal(motion->xvar);
+      if (motion->yvarstr) motion->dy = input->variable->compute_equal(motion->yvar);
+      if (motion->zvarstr) motion->dz = input->variable->compute_equal(motion->zvar);
+      if (motion->vxvarstr) motion->vx = input->variable->compute_equal(motion->vxvar);
+      if (motion->vyvarstr) motion->vy = input->variable->compute_equal(motion->vyvar);
+      if (motion->vzvarstr) motion->vz = input->variable->compute_equal(motion->vzvar);
+    }
+  }
+
+  // invoke appropriate move option for each surf
+  
   for (int i = 0; i < nsurf; i++) {
     if (dimension == 2) imotion = type2motion[lines[i].type];
     else imotion = type2motion[tris[i].type];
@@ -575,7 +654,7 @@ void FixSurfaceGlobal::initial_integrate(int vflag)
     else if (mstyle == WIGGLE) move_wiggle(imotion,i);
     else if (mstyle == ROTATE) move_rotate(imotion,i);
     else if (mstyle == TRANSROT) move_transrotate(imotion,i);
-    //else if (mstyle == VARIABLE) move_variable(imotion,i);
+    else if (mstyle == VARIABLE) move_variable(imotion,i);
   }
 
   // clear pointmove settings
@@ -1165,13 +1244,46 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
         }
       }
 
-      utils::logmesg(lmp,"Fix_modify move:");
-      utils::logmesg(lmp,fmt::format("  unassigned motion to {} surfs",count));
+      // error check if any surf now assigned to inactive motion
+      // b/c specification of types for "none" was incomplete
 
+      int imotion;
+      
+      count = 0;
+      if (dimension == 2) {
+        for (int i = 0; i < nlines; i++) {
+          imotion = type2motion[lines[i].type];
+          if (imotion < 0) continue;
+          if (!motions[imotion].active) count++;
+        }
+      } else {
+        for (int i = 0; i < ntris; i++) {
+          imotion = type2motion[tris[i].type];
+          if (imotion < 0) continue;
+          if (!motions[imotion].active) count++;
+        }
+      }
+
+      if (count)
+        error->all(FLERR,fmt::format("Fix_modify move none left {} surfs assigned inactive motion",count));
+
+      // stats 
+      
+      utils::logmesg(lmp,"Fix_modify move:\n");
+      utils::logmesg(lmp,fmt::format("  turned off motion for {} surfs\n",count));
+
+      // reset anymove and anymove_variable
+      // if no anymove, deallocate memory and turn off INITIAL_INTEGRATE
+      
       anymove = 0;
       for (int i = 1; i <= maxsurftype; i++)
         if (type2motion[i] >= 0) anymove = 1;
 
+      anymove_variable = 0;
+      for (int i = 0; i < nmotion; i++)
+        if (motions[i].active && motions[i].mstyle == VARIABLE)
+          anymove_variable = 1;
+      
       if (!anymove) {
         memory->destroy(points_lastneigh);
         memory->destroy(points_original);
@@ -1229,6 +1341,8 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
     // parse additional move style arguments
 
     int styleargs = modify_param_move(&motions[imotion],narg-2,&arg[2]);
+    int mstyle = motions[imotion].mstyle;
+    if (mstyle == VARIABLE) anymove_variable = 1;
     motions[imotion].time_origin = update->ntimestep;
 
     int ifix = modify->find_fix(id);
@@ -1242,7 +1356,6 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
     int itype,p1,p2,p3;
     double omega;
     double *runit;
-    int mstyle = motions[imotion].mstyle;
     int count = 0;
 
     for (int i = 0; i < nsurf; i++) {
@@ -1288,8 +1401,8 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
       }
     }
 
-    utils::logmesg(lmp,"Fix_modify move:");
-    utils::logmesg(lmp,fmt::format("  {} surfs assigned to new motion",count));
+    utils::logmesg(lmp,"Fix_modify move:\n");
+    utils::logmesg(lmp,fmt::format("  turned on motion for {} surfs\n",count));
 
     delete [] stypes;
     return 2 + styleargs;
@@ -1322,8 +1435,8 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
         }
     }
 
-    utils::logmesg(lmp,"Fix_modify type/region:");
-    utils::logmesg(lmp,fmt::format("  {} surfs assigned to type {}",count,stype));
+    utils::logmesg(lmp,"Fix_modify type/region:\n");
+    utils::logmesg(lmp,fmt::format("  {} surfs assigned to type {}\n",count,stype));
 
     return 3;
   }
@@ -1472,10 +1585,50 @@ int FixSurfaceGlobal::modify_param_move(Motion *motion, int narg, char **arg)
 
   if (strcmp(arg[0],"variable") == 0) {
     if (narg < 7) error->all(FLERR,"Illegal fix_modify move command");
-    motion->mstyle = TRANSROT;
+    motion->mstyle = VARIABLE;
 
-    error->all(FLERR,
-               "Fix_modify move variable not yet supported for fix surface/global");
+    if (strcmp(arg[1], "NULL") == 0)
+      motion->xvarstr = nullptr;
+    else if (utils::strmatch(arg[1], "^v_")) {
+      motion->xvarstr = utils::strdup(arg[1] + 2);
+    } else
+      error->all(FLERR, "Illegal fix_modify move command");
+    if (strcmp(arg[2], "NULL") == 0)
+      motion->yvarstr = nullptr;
+    else if (utils::strmatch(arg[2], "^v_")) {
+      motion->yvarstr = utils::strdup(arg[2] + 2);
+    } else
+      error->all(FLERR, "Illegal fix_modify move command");
+    if (strcmp(arg[3], "NULL") == 0)
+      motion->zvarstr = nullptr;
+    else if (utils::strmatch(arg[3], "^v_")) {
+      motion->zvarstr = utils::strdup(arg[3] + 2);
+    } else
+      error->all(FLERR, "Illegal fix_modify move command");
+
+
+    if (strcmp(arg[4], "NULL") == 0)
+      motion->vxvarstr = nullptr;
+    else if (utils::strmatch(arg[4], "^v_")) {
+      motion->vxvarstr = utils::strdup(arg[4] + 2);
+    } else
+      error->all(FLERR, "Illegal fix_modify move command");
+    if (strcmp(arg[5], "NULL") == 0)
+      motion->vyvarstr = nullptr;
+    else if (utils::strmatch(arg[5], "^v_")) {
+      motion->vyvarstr = utils::strdup(arg[5] + 2);
+    } else
+      error->all(FLERR, "Illegal fix_modify move command");
+    if (strcmp(arg[6], "NULL") == 0)
+      motion->vzvarstr = nullptr;
+    else if (utils::strmatch(arg[6], "^v_")) {
+      motion->vzvarstr = utils::strdup(arg[6] + 2);
+    } else
+      error->all(FLERR, "Illegal fix_modify move command");
+
+    if (dimension == 2 && (motion->zvarstr || motion->vzvarstr))
+      error->all(FLERR, "Fix_modify move cannot define z or vz variable for 2d problem");
+
     return 7;
   }
 
@@ -1950,9 +2103,9 @@ void FixSurfaceGlobal::check3d()
 
   flag = 0;
   for (int i = 0; i < ntris; i++) {
-    p1 = lines[i].p1;
-    p2 = lines[i].p2;
-    p3 = lines[i].p2;
+    p1 = tris[i].p1;
+    p2 = tris[i].p2;
+    p3 = tris[i].p2;
 
     auto key1 = std::make_tuple(p1,p2,p3);
     auto key2 = std::make_tuple(p1,p3,p2);
@@ -2008,20 +2161,20 @@ void FixSurfaceGlobal::check_molecules()
       neigh_e1 = connect3d[i].neigh_e1;
       neigh_e2 = connect3d[i].neigh_e2;
       neigh_e3 = connect3d[i].neigh_e3;
-      for (m = 0; m < connect3d[i].ne1; i++)
+      for (m = 0; m < connect3d[i].ne1; m++)
         if (imol != tris[neigh_e1[m]].mol) flag++;
-      for (m = 0; m < connect3d[i].ne2; i++)
+      for (m = 0; m < connect3d[i].ne2; m++)
         if (imol != tris[neigh_e2[m]].mol) flag++;
-      for (m = 0; m < connect3d[i].ne3; i++)
+      for (m = 0; m < connect3d[i].ne3; m++)
         if (imol != tris[neigh_e3[m]].mol) flag++;
       neigh_c1 = connect3d[i].neigh_c1;
       neigh_c2 = connect3d[i].neigh_c2;
       neigh_c3 = connect3d[i].neigh_c3;
-      for (m = 0; m < connect3d[i].nc1; i++)
+      for (m = 0; m < connect3d[i].nc1; m++)
         if (imol != tris[neigh_c1[m]].mol) flag++;
-      for (m = 0; m < connect3d[i].nc2; i++)
+      for (m = 0; m < connect3d[i].nc2; m++)
         if (imol != tris[neigh_c2[m]].mol) flag++;
-      for (m = 0; m < connect3d[i].nc3; i++)
+      for (m = 0; m < connect3d[i].nc3; m++)
         if (imol != tris[neigh_c3[m]].mol) flag++;
     }
     flag /= 2;
@@ -2767,19 +2920,19 @@ void FixSurfaceGlobal::stats2d()
     MathExtra::sub3(points[lines[i].p1].x,points[lines[i].p2].x,delta);
     size = MathExtra::len3(delta);
     minsize = MIN(minsize,size);
-    maxsize = MIN(maxsize,size);
+    maxsize = MAX(maxsize,size);
   }
 
   nconnect /= 2;
 
   if (comm->me == 0) {
-    utils::logmesg(lmp,"Fix surface/global line segment creation:");
-    utils::logmesg(lmp,fmt::format("  {} lines",nlines));
-    utils::logmesg(lmp,fmt::format("  {} line end points",npoints));
-    utils::logmesg(lmp,fmt::format("  {} end point connections",nconnect));
-    utils::logmesg(lmp,fmt::format("  {} free end points",nfree));
-    utils::logmesg(lmp,fmt::format("  {} min line length",minsize));
-    utils::logmesg(lmp,fmt::format("  {} max line length",maxsize));
+    utils::logmesg(lmp,"Fix surface/global line segment creation:\n");
+    utils::logmesg(lmp,fmt::format("  {} lines\n",nlines));
+    utils::logmesg(lmp,fmt::format("  {} line end points\n",npoints));
+    utils::logmesg(lmp,fmt::format("  {} end point connections\n",nconnect));
+    utils::logmesg(lmp,fmt::format("  {} free end points\n",nfree));
+    utils::logmesg(lmp,fmt::format("  {} min line length\n",minsize));
+    utils::logmesg(lmp,fmt::format("  {} max line length\n",maxsize));
   }
 }
 
@@ -2803,27 +2956,30 @@ void FixSurfaceGlobal::stats3d()
   
   for (int i = 0; i < ntris; i++) {
     nconnect_edge += connect3d[i].ne1 + connect3d[i].ne2 + connect3d[i].ne3;
-    nconnect_edge += connect3d[i].nc1 + connect3d[i].nc2 + connect3d[i].nc3;
+    nconnect_corner += connect3d[i].nc1 + connect3d[i].nc2 + connect3d[i].nc3;
 
     if (connect3d[i].ne1 == 0) nfree_edge++;
     if (connect3d[i].ne2 == 0) nfree_edge++;
     if (connect3d[i].ne3 == 0) nfree_edge++;
-    if (connect3d[i].nc1 == 0) nfree_corner++;
-    if (connect3d[i].nc2 == 0) nfree_corner++;
-    if (connect3d[i].nc3 == 0) nfree_corner++;
+
+    // a free corner point requires 2 adjacent edges also have no connections
+    
+    if (connect3d[i].nc1 == 0 && (connect3d[i].ne3 == 0 && connect3d[i].ne1 == 0)) nfree_corner++;
+    if (connect3d[i].nc2 == 0 && (connect3d[i].ne1 == 0 && connect3d[i].ne2 == 0)) nfree_corner++;
+    if (connect3d[i].nc3 == 0 && (connect3d[i].ne2 == 0 && connect3d[i].ne3 == 0)) nfree_corner++;
     
     MathExtra::sub3(points[tris[i].p1].x,points[tris[i].p2].x,delta);
     size = MathExtra::len3(delta);
     minedge = MIN(minedge,size);
-    maxedge = MIN(maxedge,size);
+    maxedge = MAX(maxedge,size);
     MathExtra::sub3(points[tris[i].p2].x,points[tris[i].p3].x,delta);
     size = MathExtra::len3(delta);
     minedge = MIN(minedge,size);
-    maxedge = MIN(maxedge,size);
+    maxedge = MAX(maxedge,size);
     MathExtra::sub3(points[tris[i].p3].x,points[tris[i].p1].x,delta);
     size = MathExtra::len3(delta);
     minedge = MIN(minedge,size);
-    maxedge = MIN(maxedge,size);
+    maxedge = MAX(maxedge,size);
 
     MathExtra::sub3(points[tris[i].p2].x,points[tris[i].p1].x,edge12);
     MathExtra::sub3(points[tris[i].p3].x,points[tris[i].p1].x,edge13);
@@ -2837,18 +2993,18 @@ void FixSurfaceGlobal::stats3d()
   nconnect_corner /= 2;
 
   if (comm->me == 0) {
-    utils::logmesg(lmp,"Fix surface/global triangle creation:");
-    utils::logmesg(lmp,fmt::format("  {} tris",ntris));
-    utils::logmesg(lmp,fmt::format("  {} tri edges",nedges));
-    utils::logmesg(lmp,fmt::format("  {} tri corner points",npoints));
-    utils::logmesg(lmp,fmt::format("  {} edge connections",nconnect_edge));
-    utils::logmesg(lmp,fmt::format("  {} corner point connections",nconnect_corner));
-    utils::logmesg(lmp,fmt::format("  {} free edges",nfree_edge));
-    utils::logmesg(lmp,fmt::format("  {} free corner points",nfree_corner));
-    utils::logmesg(lmp,fmt::format("  {} min edge length",minedge));
-    utils::logmesg(lmp,fmt::format("  {} max edge length",maxedge));
-    utils::logmesg(lmp,fmt::format("  {} min tri area",minarea));
-    utils::logmesg(lmp,fmt::format("  {} max tri area",maxarea));
+    utils::logmesg(lmp,"Fix surface/global triangle creation:\n");
+    utils::logmesg(lmp,fmt::format("  {} tris\n",ntris));
+    utils::logmesg(lmp,fmt::format("  {} tri edges\n",nedges));
+    utils::logmesg(lmp,fmt::format("  {} tri corner points\n",npoints));
+    utils::logmesg(lmp,fmt::format("  {} edge connections\n",nconnect_edge));
+    utils::logmesg(lmp,fmt::format("  {} corner point connections\n",nconnect_corner));
+    utils::logmesg(lmp,fmt::format("  {} free edges\n",nfree_edge));
+    utils::logmesg(lmp,fmt::format("  {} free corner points\n",nfree_corner));
+    utils::logmesg(lmp,fmt::format("  {} min edge length\n",minedge));
+    utils::logmesg(lmp,fmt::format("  {} max edge length\n",maxedge));
+    utils::logmesg(lmp,fmt::format("  {} min tri area\n",minarea));
+    utils::logmesg(lmp,fmt::format("  {} max tri area\n",maxarea));
   }
 }
 
@@ -2915,7 +3071,7 @@ void FixSurfaceGlobal::surface_attributes()
 }
 
 /* -------------------------------------------------------------------------
-   X = X0 + V*dt
+   linear move: X = X0 + V*dt
 ------------------------------------------------------------------------- */
 
 void FixSurfaceGlobal::move_linear(int imotion, int i)
@@ -2996,7 +3152,7 @@ void FixSurfaceGlobal::move_linear(int imotion, int i)
 }
 
 /* -------------------------------------------------------------------------
-   X = X0 + A sin(w*dt)
+   wiggle move: X = X0 + A sin(w*dt)
 ------------------------------------------------------------------------- */
 
 void FixSurfaceGlobal::move_wiggle(int imotion, int i)
@@ -3081,7 +3237,7 @@ void FixSurfaceGlobal::move_wiggle(int imotion, int i)
 }
 
 /* -------------------------------------------------------------------------
-   rotate by right-hand rule around omega
+   rotate move: rotate by right-hand rule around omega
 ------------------------------------------------------------------------- */
 
 void FixSurfaceGlobal::move_rotate(int imotion, int i)
@@ -3199,6 +3355,7 @@ void FixSurfaceGlobal::move_rotate(int imotion, int i)
 }
 
 /* -------------------------------------------------------------------------
+   transrotate move:
    rotate by right-hand rule around omega
    add translation after rotation
 ------------------------------------------------------------------------- */
@@ -3381,6 +3538,132 @@ void FixSurfaceGlobal::move_rotate_point(int i, double *rpoint, double *runit,
   pt[0] = rpoint[0] + c[0] + disp[0];
   pt[1] = rpoint[1] + c[1] + disp[1];
   pt[2] = rpoint[2] + c[2] + disp[2];
+}
+
+/* -------------------------------------------------------------------------
+   variable move:
+   apply displacement variables if not NULL
+   apply velocity variables if not NULL
+------------------------------------------------------------------------- */
+
+void FixSurfaceGlobal::move_variable(int imotion, int i)
+{
+  Motion *motion = &motions[imotion];
+
+  char *xvarstr = motion->xvarstr;
+  char *yvarstr = motion->yvarstr;
+  char *zvarstr = motion->zvarstr;
+  char *vxvarstr = motion->vxvarstr;
+  char *vyvarstr = motion->vyvarstr;
+  char *vzvarstr = motion->vzvarstr;
+  double dx = motion->dx;
+  double dy = motion->dy;
+  double dz = motion->dz;
+  double vx = motion->vx;
+  double vy = motion->vy;
+  double vz = motion->vz;
+
+  double dt = update->dt;
+
+  // points - use of pointmove only moves a point once
+  // if displacement is variable, set x
+  // if only velocity is variable, time-integrate x using v
+  // if neither is variable, no change to x
+  
+  int pindex;
+  double *pt;
+
+  if (dimension == 2) {
+    pindex = lines[i].p1;
+    if (!pointmove[pindex]) {
+      pt = points[pindex].x;
+      if (vxvarstr && !xvarstr) pt[0] += dt*dx;
+      else if (xvarstr) pt[0] = points_original[i][0] + dx;
+      if (vyvarstr && !yvarstr) pt[1] += dt*dy;
+      else if (yvarstr) pt[1] = points_original[i][1] + dy;
+      pointmove[pindex] = 1;
+    }
+    pindex = lines[i].p2;
+    if (!pointmove[pindex]) {
+      pt = points[pindex].x;
+      if (vxvarstr && !xvarstr) pt[0] += dt*dx;
+      else if (xvarstr) pt[0] = points_original[i][0] + dx;
+      if (vyvarstr && !yvarstr) pt[1] += dt*dy;
+      else if (yvarstr) pt[1] = points_original[i][1] + dy;
+      pointmove[pindex] = 1;
+    }
+
+  } else {
+    pindex = tris[i].p1;
+    if (!pointmove[pindex]) {
+      pt = points[pindex].x;
+      if (vxvarstr && !xvarstr) pt[0] += dt*dx;
+      else if (xvarstr) pt[0] = points_original[i][0] + dx;
+      if (vyvarstr && !yvarstr) pt[1] += dt*dy;
+      else if (yvarstr) pt[1] = points_original[i][1] + dy;
+      if (vzvarstr && !zvarstr) pt[2] += dt*dz;
+      else if (zvarstr) pt[2] = points_original[i][2] + dz;
+      pointmove[pindex] = 1;
+    }
+    pindex = tris[i].p2;
+    if (!pointmove[pindex]) {
+      pt = points[pindex].x;
+      if (vxvarstr && !xvarstr) pt[0] += dt*dx;
+      else if (xvarstr) pt[0] = points_original[i][0] + dx;
+      if (vyvarstr && !yvarstr) pt[1] += dt*dy;
+      else if (yvarstr) pt[1] = points_original[i][1] + dy;
+      if (vzvarstr && !zvarstr) pt[2] += dt*dz;
+      else if (zvarstr) pt[2] = points_original[i][2] + dz;
+      pointmove[pindex] = 1;
+    }
+    pindex = tris[i].p3;
+    if (!pointmove[pindex]) {
+      pt = points[pindex].x;
+      if (vxvarstr && !xvarstr) pt[0] += dt*dx;
+      else if (xvarstr) pt[0] = points_original[i][0] + dx;
+      if (vyvarstr && !yvarstr) pt[1] += dt*dy;
+      else if (yvarstr) pt[1] = points_original[i][1] + dy;
+      if (vzvarstr && !zvarstr) pt[2] += dt*dz;
+      else if (zvarstr) pt[2] = points_original[i][2] + dz;
+      pointmove[pindex] = 1;
+    }
+  }
+
+  // xsurf and vsurf
+  // if both displacement and velocity are variable, use them to set both x and v
+  // if only displacement is variable, only set x
+  // if only velocity is variable, set v and time-integrate x using v
+  // if neither is variable, no change to x and v
+
+  if (xvarstr && vxvarstr) {
+    vsurf[i][0] = vx;
+    xsurf[i][0] = xsurf_original[i][0] + dx;
+  } else if (xvarstr) {
+    xsurf[i][0] = xsurf_original[i][0] + dx;
+  } else if (vxvarstr) {
+    vsurf[i][0] = vx;
+    xsurf[i][0] += dt*dx;
+  }
+
+  if (yvarstr && vyvarstr) {
+    vsurf[i][1] = vy;
+    xsurf[i][1] = xsurf_original[i][1] + dy;
+  } else if (yvarstr) {
+    xsurf[i][1] = xsurf_original[i][1] + dy;
+  } else if (vyvarstr) {
+    vsurf[i][1] = vy;
+    xsurf[i][1] += dt*dy;
+  }
+
+  if (zvarstr && vzvarstr) {
+    vsurf[i][2] = vx;
+    xsurf[i][2] = xsurf_original[i][2] + dz;
+  } else if (zvarstr) {
+    xsurf[i][2] = xsurf_original[i][2] + dz;
+  } else if (vzvarstr) {
+    vsurf[i][2] = vz;
+    xsurf[i][2] += dt*dz;
+  }
 }
 
 /* ----------------------------------------------------------------------
