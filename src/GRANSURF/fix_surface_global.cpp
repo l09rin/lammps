@@ -174,12 +174,15 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
       model->contact_type = SURFACE;
 
       int classic_flag = 1;
-      if (strcmp(arg[iarg+3], "granular") == 0) classic_flag = 0;
       iarg += 3;
+      if (strcmp(arg[iarg], "granular") == 0) {
+        classic_flag = 0;
+        iarg += 1;
+      }
 
       if (classic_flag) {
         iarg = model->define_classic_model(arg, iarg, narg);
-        if (iarg < narg && strcmp(arg[iarg],"limit_damping") == 0) {
+        if (iarg < narg && strcmp(arg[iarg], "limit_damping") == 0) {
           model->limit_damping = 1;
           iarg++;
         }
@@ -374,11 +377,11 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
   else connectivity3d();
 
   // warn if any connections between surfs with different molIDs
-  
+
   check_molecules();
 
   // print stats on surfs and their connectivity
-  
+
   if (dimension == 2) stats2d();
   else stats3d();
 }
@@ -1096,8 +1099,8 @@ void FixSurfaceGlobal::post_force(int vflag)
       model->calculate_forces();
 
       // Sychronize history across flat contacts
-      //   could create issues if one crosses the bridge of a "U" of flat surfaces
-      //   e.g. if one steps off downhill on a hair pin turn
+      //   can be arbitrary if not all connected flat surfaces are mutually flat
+      //   e.g. a hair pin turn where surfs on either end of the 'U' are not flat
       for (it = 0; it < force_surfs->size(); it++) {
         m = (*force_surfs)[it];
         jjtmp = contact_surfs[m].neigh_index;
@@ -1250,7 +1253,7 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
       else itype = tris[i].type;
       if (!stypes[itype]) continue;
       count++;
-      
+
       if (dimension == 2) {
         p1 = lines[i].p1;
         p2 = lines[i].p2;
@@ -1980,7 +1983,7 @@ void FixSurfaceGlobal::check3d()
 void FixSurfaceGlobal::check_molecules()
 {
   int i,j,m,imol,flag;
-  
+
   if (dimension == 2) {
     int *neigh_p1,*neigh_p2;
     flag = 0;
@@ -1998,7 +2001,7 @@ void FixSurfaceGlobal::check_molecules()
       error->warning(FLERR,
                      "Fix surface/global endpoint connections between "
                      "different molecule IDs =",flag);
-    
+
   } else {
     int *neigh_e1,*neigh_e2,*neigh_e3;
     int *neigh_c1,*neigh_c2,*neigh_c3;
@@ -2078,7 +2081,7 @@ void FixSurfaceGlobal::connectivity2d()
     p1_counts[i] = counts[lines[i].p1] - 1;
     p2_counts[i] = counts[lines[i].p2] - 1;
   }
-  
+
   // allocate all ragged arrays which Connect2d will point to
 
   memory->create_ragged(neigh_p1,nlines,p1_counts,"surface/global:neigh_p1");
@@ -2322,7 +2325,7 @@ void FixSurfaceGlobal::connectivity3d()
     e2_counts[i] = counts[tri2edge[i][1]] - 1;
     e3_counts[i] = counts[tri2edge[i][2]] - 1;
   }
-  
+
   // allocate all edge ragged arrays which Connect3d will point to
 
   memory->create_ragged(neigh_e1,ntris,e1_counts,"surface/global:neigh_e1");
@@ -2593,7 +2596,7 @@ void FixSurfaceGlobal::connectivity3d()
     ctris[tris[i].p2][counts[tris[i].p2]++] = i;
     ctris[tris[i].p3][counts[tris[i].p3]++] = i;
   }
-  
+
   // c1/c2/c3_counts = # of tris connecting to corner points c1/c2/c3 of each tri
   // do NOT include self or tris which connect to an edge
   // only include tris which only connect at the corner point
@@ -2611,7 +2614,7 @@ void FixSurfaceGlobal::connectivity3d()
     c3_counts[i] = counts[tris[i].p3] - 1;
     c3_counts[i] -= connect3d[i].ne2 + connect3d[i].ne3;
   }
-  
+
   // allocate all corner ragged arrays which Connect3d will point to
 
   memory->create_ragged(neigh_c1,ntris,c1_counts,"surface/global:neigh_c1");
@@ -2657,21 +2660,21 @@ void FixSurfaceGlobal::connectivity3d()
   // only include tris which only connect at the corner point
 
   int n,medge,skipflag;
-  
+
   for (int i = 0; i < ntris; i++) {
     if (connect3d[i].nc1) {
       j = 0;
       for (m = 0; m < counts[tris[i].p1]; m++) {
         n = ctris[tris[i].p1][m];
         if (n == i) continue;
-        
+
         skipflag = 0;
         for (medge = 0; medge < connect3d[i].ne3; medge++)
           if (n == connect3d[i].neigh_e3[medge]) skipflag = 1;
         for (medge = 0; medge < connect3d[i].ne1; medge++)
           if (n == connect3d[i].neigh_e1[medge]) skipflag = 1;
         if (skipflag) continue;
-        
+
         connect3d[i].neigh_c1[j] = ctris[tris[i].p1][m];
         j++;
       }
@@ -2754,12 +2757,12 @@ void FixSurfaceGlobal::stats2d()
 {
   double size;
   double delta[3];
-  
+
   int nconnect = 0;
   int nfree = 0;
   double minsize = BIG;
   double maxsize = 0.0;
-  
+
   for (int i = 0; i < nlines; i++) {
     nconnect += connect2d[i].np1 + connect2d[i].np2;
     if (connect2d[i].np1 == 0) nfree++;
@@ -2791,7 +2794,7 @@ void FixSurfaceGlobal::stats3d()
 {
   double size,area;
   double delta[3],edge12[3],edge13[3],cross[3];
-  
+
   int nconnect_edge = 0;
   int nconnect_corner = 0;
   int nfree_edge = 0;
@@ -2800,7 +2803,7 @@ void FixSurfaceGlobal::stats3d()
   double maxedge = 0.0;
   double minarea = BIG;
   double maxarea = 0.0;
-  
+
   for (int i = 0; i < ntris; i++) {
     nconnect_edge += connect3d[i].ne1 + connect3d[i].ne2 + connect3d[i].ne3;
     nconnect_edge += connect3d[i].nc1 + connect3d[i].nc2 + connect3d[i].nc3;
@@ -2811,7 +2814,7 @@ void FixSurfaceGlobal::stats3d()
     if (connect3d[i].nc1 == 0) nfree_corner++;
     if (connect3d[i].nc2 == 0) nfree_corner++;
     if (connect3d[i].nc3 == 0) nfree_corner++;
-    
+
     MathExtra::sub3(points[tris[i].p1].x,points[tris[i].p2].x,delta);
     size = MathExtra::len3(delta);
     minedge = MIN(minedge,size);
