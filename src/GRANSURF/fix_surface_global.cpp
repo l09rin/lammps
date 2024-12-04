@@ -28,14 +28,14 @@
 //       to enable some particles to pass thru some surfs
 
 // Performance improvements
+// NOTE: optimal access to velocity of each surf
 // NOTE: need to order connections with FLAT first ?
 // NOTE: more efficient neighbor lists, see Joel's 18 Nov email for ideas
 
 // NOTE: enable fix move variable style for equal-style vars only ?
-// NOTE: stats 2d/3d - how to use utils print function
-// NOTE: print stats on fix modify move and type/region effects
 
-// doc:  can use scale keyword in the molecule command for lines/tris
+// doc: can use scale keyword in the molecule command for lines/tris
+// doc: molID warning - rules of thumb for mols and types of each surf
 
 #include "fix_surface_global.h"
 
@@ -1144,6 +1144,7 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
     }
 
     if (strcmp(arg[2],"none") == 0) {
+      int count = 0;
       for (int itype = 1; itype <= maxsurftype; itype++) {
         if (type2motion[itype] < 0) continue;
         int imotion = type2motion[itype];
@@ -1159,9 +1160,13 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
           if (stype == itype) {
             vsurf[i][0] = vsurf[i][1] = vsurf[i][2] = 0.0;
             omegasurf[i][0] = omegasurf[i][1] = omegasurf[i][2] = 0.0;
+            count++;
           }
         }
       }
+
+      utils::logmesg(lmp,"Fix_modify move:");
+      utils::logmesg(lmp,fmt::format("  unassigned motion to {} surfs",count));
 
       anymove = 0;
       for (int i = 1; i <= maxsurftype; i++)
@@ -1238,12 +1243,14 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
     double omega;
     double *runit;
     int mstyle = motions[imotion].mstyle;
+    int count = 0;
 
     for (int i = 0; i < nsurf; i++) {
       if (dimension == 2) itype = lines[i].type;
       else itype = tris[i].type;
       if (!stypes[itype]) continue;
-
+      count++;
+      
       if (dimension == 2) {
         p1 = lines[i].p1;
         p2 = lines[i].p2;
@@ -1281,6 +1288,9 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
       }
     }
 
+    utils::logmesg(lmp,"Fix_modify move:");
+    utils::logmesg(lmp,fmt::format("  {} surfs assigned to new motion",count));
+
     delete [] stypes;
     return 2 + styleargs;
   }
@@ -1297,15 +1307,23 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
     auto region = domain->get_region_by_id(arg[2]);
     if (!region) error->all(FLERR,"Fix_modify type/region region {} does not exist", arg[2]);
 
+    int count = 0;
     if (dimension == 2) {
       for (int i = 0; i < nlines; i++)
-        if (region->match(xsurf[i][0],xsurf[i][1],xsurf[i][2]))
+        if (region->match(xsurf[i][0],xsurf[i][1],xsurf[i][2])) {
           lines[i].type = stype;
+          count++;
+        }
     } else {
       for (int i = 0; i < ntris; i++)
-        if (region->match(xsurf[i][0],xsurf[i][1],xsurf[i][2]))
+        if (region->match(xsurf[i][0],xsurf[i][1],xsurf[i][2])) {
           tris[i].type = stype;
+          count++;
+        }
     }
+
+    utils::logmesg(lmp,"Fix_modify type/region:");
+    utils::logmesg(lmp,fmt::format("  {} surfs assigned to type {}",count,stype));
 
     return 3;
   }
@@ -2754,12 +2772,15 @@ void FixSurfaceGlobal::stats2d()
 
   nconnect /= 2;
 
-  utils::logmesg(lmp,fmt::format("  {} lines",nlines));
-  utils::logmesg(lmp,fmt::format("  {} line end points",npoints));
-  utils::logmesg(lmp,fmt::format("  {} end point connections",nconnect));
-  utils::logmesg(lmp,fmt::format("  {} free end points",nfree));
-  utils::logmesg(lmp,fmt::format("  {} min line length",minsize));
-  utils::logmesg(lmp,fmt::format("  {} max line length",maxsize));
+  if (comm->me == 0) {
+    utils::logmesg(lmp,"Fix surface/global line segment creation:");
+    utils::logmesg(lmp,fmt::format("  {} lines",nlines));
+    utils::logmesg(lmp,fmt::format("  {} line end points",npoints));
+    utils::logmesg(lmp,fmt::format("  {} end point connections",nconnect));
+    utils::logmesg(lmp,fmt::format("  {} free end points",nfree));
+    utils::logmesg(lmp,fmt::format("  {} min line length",minsize));
+    utils::logmesg(lmp,fmt::format("  {} max line length",maxsize));
+  }
 }
 
 /* ----------------------------------------------------------------------
@@ -2815,17 +2836,20 @@ void FixSurfaceGlobal::stats3d()
   nconnect_edge /= 2;
   nconnect_corner /= 2;
 
-  utils::logmesg(lmp,fmt::format("  {} tris",ntris));
-  utils::logmesg(lmp,fmt::format("  {} tri edges",nedges));
-  utils::logmesg(lmp,fmt::format("  {} tri corner points",npoints));
-  utils::logmesg(lmp,fmt::format("  {} edge connections",nconnect_edge));
-  utils::logmesg(lmp,fmt::format("  {} corner point connections",nconnect_corner));
-  utils::logmesg(lmp,fmt::format("  {} free edges",nfree_edge));
-  utils::logmesg(lmp,fmt::format("  {} free corner points",nfree_corner));
-  utils::logmesg(lmp,fmt::format("  {} min edge length",minedge));
-  utils::logmesg(lmp,fmt::format("  {} max edge length",maxedge));
-  utils::logmesg(lmp,fmt::format("  {} min tri area",minarea));
-  utils::logmesg(lmp,fmt::format("  {} max tri area",maxarea));
+  if (comm->me == 0) {
+    utils::logmesg(lmp,"Fix surface/global triangle creation:");
+    utils::logmesg(lmp,fmt::format("  {} tris",ntris));
+    utils::logmesg(lmp,fmt::format("  {} tri edges",nedges));
+    utils::logmesg(lmp,fmt::format("  {} tri corner points",npoints));
+    utils::logmesg(lmp,fmt::format("  {} edge connections",nconnect_edge));
+    utils::logmesg(lmp,fmt::format("  {} corner point connections",nconnect_corner));
+    utils::logmesg(lmp,fmt::format("  {} free edges",nfree_edge));
+    utils::logmesg(lmp,fmt::format("  {} free corner points",nfree_corner));
+    utils::logmesg(lmp,fmt::format("  {} min edge length",minedge));
+    utils::logmesg(lmp,fmt::format("  {} max edge length",maxedge));
+    utils::logmesg(lmp,fmt::format("  {} min tri area",minarea));
+    utils::logmesg(lmp,fmt::format("  {} max tri area",maxarea));
+  }
 }
 
 /* ----------------------------------------------------------------------
