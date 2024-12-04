@@ -439,7 +439,6 @@ FixSurfaceGlobal::~FixSurfaceGlobal()
   memory->sfree(connect3d);
 
   memory->sfree(contact_surfs);
-  memory->destroy(contact_surfs);
 
   memory->destroy(xsurf);
   memory->destroy(vsurf);
@@ -849,7 +848,7 @@ void FixSurfaceGlobal::post_force(int vflag)
   int *ilist,*jlist,*numneigh,**firstneigh;
   int *touch,**firsttouch,touch_flag;
   double rsq,radsum;
-  double dr[3],contact[3],ds[3],vs[3],*forces,*torquesi;
+  double dr[3],contact[3],ds[3],xc[3],vc[3],omegac[3],*forces,*torquesi;
   double *history,*allhistory,**firsthistory;
 
   double dot, overlap, max_overlap, norm, *knorm;
@@ -948,8 +947,8 @@ void FixSurfaceGlobal::post_force(int vflag)
       // if (factor_lj == 0) continue;
 
       delx = xtmp - xsurf[j][0];
-      dely = xtmp - xsurf[j][1];
-      delz = xtmp - xsurf[j][2];
+      dely = ytmp - xsurf[j][1];
+      delz = ztmp - xsurf[j][2];
       rsq = delx * delx + dely * dely + delz * delz;
 
       // skip contact check if particle/surf are too far apart
@@ -1061,7 +1060,7 @@ void FixSurfaceGlobal::post_force(int vflag)
           }
 
           // Skip if not in contact
-          if (contacts_map->find(k) != contacts_map->end())
+          if (contacts_map->find(k) == contacts_map->end())
             continue;
 
           // Skip if processed
@@ -1123,34 +1122,46 @@ void FixSurfaceGlobal::post_force(int vflag)
       if (force_surfs->size() != 1) {
         norm = 0.0;
         max_overlap = 0.0;
+
+        for (k = 0; k < 3; k++) {
+          xc[k] = 0.0;
+          vc[k] = 0.0;
+          omegac[k] = 0.0;
+        }
+
         for (it = 0; it < force_surfs->size(); it++) {
           m = (*force_surfs)[it];
-          overlap = contact_surfs[m].overlap;
+          overlap = fabs(contact_surfs[m].overlap);
           max_overlap = MAX(max_overlap, overlap);
           norm += overlap * overlap;
 
           for (k = 0; k < 3; k++) {
-            model->xj[k] += contact_surfs[m].r[k] *overlap;
-            model->vj[k] += vsurf[contact_surfs[m].index][k] * overlap;
-            model->omegaj[k] += omegasurf[contact_surfs[m].index][k] * overlap;
+            xc[k] += contact_surfs[m].r[k] * overlap;
+            vc[k] += vsurf[contact_surfs[m].index][k] * overlap;
+            omegac[k] += omegasurf[contact_surfs[m].index][k] * overlap;
           }
         }
 
         norm = 1.0 / norm;
         for (k = 0; k < 3; k++) {
-          model->xj[k] = model->xi[k] - model->xj[k] * max_overlap * norm;
-          model->vj[k] *= norm;
-          model->omegaj[k] *= norm;
+          xc[k] = model->xi[k] - model->xj[k] * max_overlap * norm;
+          vc[k] *= norm;
+          omegac[k] *= norm;
         }
       } else {
         m = (*force_surfs)[0];
         overlap = contact_surfs[m].overlap;
+
         for (k = 0; k < 3; k++) {
-          model->xj[k] = model->xi[k] - contact_surfs[m].r[k] *overlap;
-          model->vj[k] = vsurf[contact_surfs[m].index][k] * overlap;
-          model->omegaj[k] = omegasurf[contact_surfs[m].index][k] * overlap;
+          xc[k] = model->xi[k] - contact_surfs[m].r[k] * overlap;
+          vc[k] = vsurf[contact_surfs[m].index][k];
+          omegac[k] = omegasurf[contact_surfs[m].index][k];
         }
       }
+
+      model->vj = vc;
+      model->xj = xc;
+      model->omegaj = omegac;
 
       if (use_history) model->touch = touch[jj];
 
@@ -1180,13 +1191,15 @@ void FixSurfaceGlobal::post_force(int vflag)
       // Sychronize history across flat contacts
       //   can be arbitrary if not all connected flat surfaces are mutually flat
       //   e.g. a hair pin turn where surfs on either end of the 'U' are not flat
-      for (it = 0; it < force_surfs->size(); it++) {
-        m = (*force_surfs)[it];
-        jjtmp = contact_surfs[m].neigh_index;
-        if (jj != jjtmp) {
-          touch[jjtmp] = 1;
-          for (k = 0; k < size_history; k++)
-            allhistory[size_history * jjtmp + k] = history[k];
+      if (use_history) {
+        for (it = 0; it < force_surfs->size(); it++) {
+          m = (*force_surfs)[it];
+          jjtmp = contact_surfs[m].neigh_index;
+          if (jj != jjtmp) {
+            touch[jjtmp] = 1;
+            for (k = 0; k < size_history; k++)
+              allhistory[size_history * jjtmp + k] = history[k];
+          }
         }
       }
 
@@ -3695,7 +3708,7 @@ void FixSurfaceGlobal::walk_flat_connections2d(int j, std::unordered_set<int>
     }
 
     // Skip if not in contact
-    if (contacts_map->find(k) != contacts_map->end())
+    if (contacts_map->find(k) == contacts_map->end())
       continue;
 
     // Skip if processed
