@@ -149,7 +149,8 @@ class FixSurfaceGlobal : public Fix {
   Line *lines;                // global list of lines
   Tri *tris;                  // global list of tris
   int npoints,nlines,ntris;   // count of each
-  int maxpoints;
+  int nedges;                 // count of unique tri edges
+  int maxpoints;              // allocated length of points
   int nsurf;                  // count of lines or tris for 2d/3d
 
   // ragged 2d arrays for 2d connectivity
@@ -189,7 +190,7 @@ class FixSurfaceGlobal : public Fix {
   int **neigh_c2;             // indices of other tris connected to cpt 21
   int **cwhich_c2;            // which corner point (0/1/2) on other tri is cpt 2
   int **neigh_c3;             // indices of tris connected to cpt 3
-  int **cwhich_c3;            // which coner point (0/1/2) on other tri is cpt 3
+  int **cwhich_c3;            // which corner point (0/1/2) on other tri is cpt 3
 
   // per-surface 2d/3d connectivity
 
@@ -270,6 +271,10 @@ class FixSurfaceGlobal : public Fix {
   void check3d();
   void connectivity2d();
   void connectivity3d();
+  void check_molecules();
+  void stats2d();
+  void stats3d();
+  
   void surface_attributes();
 
   void walk_flat_connections2d(int, std::unordered_set<int> *, std::map<int, int> *, std::vector<int> *);

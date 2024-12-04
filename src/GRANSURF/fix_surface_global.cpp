@@ -12,10 +12,9 @@
    See the README file in the top-level LAMMPS directory.
 ------------------------------------------------------------------------- */
 
+// Conceptual issues
 // NOTE: allow for multiple instances of this fix or not ?
-// NOTE: need to order connections with FLAT first?
 // NOTE: warn for too-small lines - how to know smallest particle size ?
-// NOTE: more efficient neighbor lists, see Joel's 18 Nov email for ideas
 // NOTE: alter connection info if 2 lines/tris are different types ?
 // NOTE: should this fix produce any output
 //         global array with force on each surf
@@ -28,8 +27,12 @@
 // NOTE: could allow non-assignment of type pairs
 //       to enable some particles to pass thru some surfs
 
+// Performance improvements
+// NOTE: need to order connections with FLAT first ?
+// NOTE: more efficient neighbor lists, see Joel's 18 Nov email for ideas
+
 // NOTE: enable fix move variable style for equal-style vars only ?
-// NOTE: print stats on # of surfs, connections, min/max surf sizes
+// NOTE: stats 2d/3d - how to use utils print function
 // NOTE: print stats on fix modify move and type/region effects
 
 // doc:  can use scale keyword in the molecule command for lines/tris
@@ -86,6 +89,7 @@ enum{SAME_SIDE,OPPOSITE_SIDE};
 #define DELTAMODEL 1    // make larger after debugging
 #define DELTAMOTION 1   // make larger after debugging
 #define MAXSURFTYPE 1024  // extreme, so can reduce it later
+#define BIG 1.0e20
 
 /* ---------------------------------------------------------------------- */
 
@@ -368,6 +372,15 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
 
   if (dimension == 2) connectivity2d();
   else connectivity3d();
+
+  // warn if any connections between surfs with different molIDs
+  
+  check_molecules();
+
+  // print stats on surfs and their connectivity
+  
+  if (dimension == 2) stats2d();
+  else stats3d();
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1941,6 +1954,67 @@ void FixSurfaceGlobal::check3d()
 }
 
 /* ----------------------------------------------------------------------
+   issue warning if any connected lines/tris have different molIDs
+   molIDs are not used now, but may be in future
+   an inter-connected set of surfs should have a single molID
+------------------------------------------------------------------------- */
+
+void FixSurfaceGlobal::check_molecules()
+{
+  int i,j,m,imol,flag;
+  
+  if (dimension == 2) {
+    int *neigh_p1,*neigh_p2;
+    flag = 0;
+    for (i = 0; i < nlines; i++) {
+      imol = lines[i].mol;
+      neigh_p1 = connect2d[i].neigh_p1;
+      neigh_p2 = connect2d[i].neigh_p2;
+      for (m = 0; m < connect2d[i].np1; i++)
+        if (imol != lines[neigh_p1[m]].mol) flag++;
+      for (m = 0; m < connect2d[i].np2; i++)
+        if (imol != lines[neigh_p2[m]].mol) flag++;
+    }
+    flag /= 2;
+    if (flag && comm->me == 0)
+      error->warning(FLERR,
+                     "Fix surface/global endpoint connections between "
+                     "different molecule IDs =",flag);
+    
+  } else {
+    int *neigh_e1,*neigh_e2,*neigh_e3;
+    int *neigh_c1,*neigh_c2,*neigh_c3;
+    flag = 0;
+    for (i = 0; i < ntris; i++) {
+      imol = tris[i].mol;
+      neigh_e1 = connect3d[i].neigh_e1;
+      neigh_e2 = connect3d[i].neigh_e2;
+      neigh_e3 = connect3d[i].neigh_e3;
+      for (m = 0; m < connect3d[i].ne1; i++)
+        if (imol != tris[neigh_e1[m]].mol) flag++;
+      for (m = 0; m < connect3d[i].ne2; i++)
+        if (imol != tris[neigh_e2[m]].mol) flag++;
+      for (m = 0; m < connect3d[i].ne3; i++)
+        if (imol != tris[neigh_e3[m]].mol) flag++;
+      neigh_c1 = connect3d[i].neigh_c1;
+      neigh_c2 = connect3d[i].neigh_c2;
+      neigh_c3 = connect3d[i].neigh_c3;
+      for (m = 0; m < connect3d[i].nc1; i++)
+        if (imol != tris[neigh_c1[m]].mol) flag++;
+      for (m = 0; m < connect3d[i].nc2; i++)
+        if (imol != tris[neigh_c2[m]].mol) flag++;
+      for (m = 0; m < connect3d[i].nc3; i++)
+        if (imol != tris[neigh_c3[m]].mol) flag++;
+    }
+    flag /= 2;
+    if (flag && comm->me == 0)
+      error->warning(FLERR,
+                     "Fix surface/global edge/corner connections between "
+                     "different molecule IDs =",flag);
+  }
+}
+
+/* ----------------------------------------------------------------------
    create and initialize Connect2d info for all lines
    this creates plines and connect2d data structs
 ------------------------------------------------------------------------- */
@@ -2144,13 +2218,13 @@ void FixSurfaceGlobal::connectivity3d()
   //   key = <p1,p2> indices of 2 points, in either order
   //   value = index of the unique edge (0 to Nedge-1)
   // tri2edges[i][j] = index of unique edge for tri I and edge J
-  // nedges = total count of unique edges
+  // nedges = total count of unique edges, stored for use elsewhere
 
   int **tri2edge;
   memory->create(tri2edge,ntris,3,"surfface/global::tri2edge");
 
   std::map<std::tuple<int,int>,int> hash;
-  int nedges = 0;
+  nedges = 0;
 
   for (int i = 0; i < ntris; i++) {
     p1 = tris[i].p1;
@@ -2652,6 +2726,106 @@ void FixSurfaceGlobal::connectivity3d()
       else if (tris[i].p3 == tris[j].p3) connect3d[i].cwhich_c3[m] = 2;
     }
   }
+}
+
+/* ----------------------------------------------------------------------
+   print stats on all lines and their connections
+------------------------------------------------------------------------- */
+
+void FixSurfaceGlobal::stats2d()
+{
+  double size;
+  double delta[3];
+  
+  int nconnect = 0;
+  int nfree = 0;
+  double minsize = BIG;
+  double maxsize = 0.0;
+  
+  for (int i = 0; i < nlines; i++) {
+    nconnect += connect2d[i].np1 + connect2d[i].np2;
+    if (connect2d[i].np1 == 0) nfree++;
+    if (connect2d[i].np2 == 0) nfree++;
+    MathExtra::sub3(points[lines[i].p1].x,points[lines[i].p2].x,delta);
+    size = MathExtra::len3(delta);
+    minsize = MIN(minsize,size);
+    maxsize = MIN(maxsize,size);
+  }
+
+  nconnect /= 2;
+
+  utils::logmesg(lmp,fmt::format("  {} lines",nlines));
+  utils::logmesg(lmp,fmt::format("  {} line end points",npoints));
+  utils::logmesg(lmp,fmt::format("  {} end point connections",nconnect));
+  utils::logmesg(lmp,fmt::format("  {} free end points",nfree));
+  utils::logmesg(lmp,fmt::format("  {} min line length",minsize));
+  utils::logmesg(lmp,fmt::format("  {} max line length",maxsize));
+}
+
+/* ----------------------------------------------------------------------
+   print stats on all tris and their connections
+------------------------------------------------------------------------- */
+
+void FixSurfaceGlobal::stats3d()
+{
+  double size,area;
+  double delta[3],edge12[3],edge13[3],cross[3];
+  
+  int nconnect_edge = 0;
+  int nconnect_corner = 0;
+  int nfree_edge = 0;
+  int nfree_corner = 0;
+  double minedge = BIG;
+  double maxedge = 0.0;
+  double minarea = BIG;
+  double maxarea = 0.0;
+  
+  for (int i = 0; i < ntris; i++) {
+    nconnect_edge += connect3d[i].ne1 + connect3d[i].ne2 + connect3d[i].ne3;
+    nconnect_edge += connect3d[i].nc1 + connect3d[i].nc2 + connect3d[i].nc3;
+
+    if (connect3d[i].ne1 == 0) nfree_edge++;
+    if (connect3d[i].ne2 == 0) nfree_edge++;
+    if (connect3d[i].ne3 == 0) nfree_edge++;
+    if (connect3d[i].nc1 == 0) nfree_corner++;
+    if (connect3d[i].nc2 == 0) nfree_corner++;
+    if (connect3d[i].nc3 == 0) nfree_corner++;
+    
+    MathExtra::sub3(points[tris[i].p1].x,points[tris[i].p2].x,delta);
+    size = MathExtra::len3(delta);
+    minedge = MIN(minedge,size);
+    maxedge = MIN(maxedge,size);
+    MathExtra::sub3(points[tris[i].p2].x,points[tris[i].p3].x,delta);
+    size = MathExtra::len3(delta);
+    minedge = MIN(minedge,size);
+    maxedge = MIN(maxedge,size);
+    MathExtra::sub3(points[tris[i].p3].x,points[tris[i].p1].x,delta);
+    size = MathExtra::len3(delta);
+    minedge = MIN(minedge,size);
+    maxedge = MIN(maxedge,size);
+
+    MathExtra::sub3(points[tris[i].p2].x,points[tris[i].p1].x,edge12);
+    MathExtra::sub3(points[tris[i].p3].x,points[tris[i].p1].x,edge13);
+    MathExtra::cross3(edge12,edge13,cross);
+    area = 0.5 * MathExtra::len3(cross);
+    minarea = MIN(minarea,area);
+    maxarea = MAX(maxarea,area);
+  }
+
+  nconnect_edge /= 2;
+  nconnect_corner /= 2;
+
+  utils::logmesg(lmp,fmt::format("  {} tris",ntris));
+  utils::logmesg(lmp,fmt::format("  {} tri edges",nedges));
+  utils::logmesg(lmp,fmt::format("  {} tri corner points",npoints));
+  utils::logmesg(lmp,fmt::format("  {} edge connections",nconnect_edge));
+  utils::logmesg(lmp,fmt::format("  {} corner point connections",nconnect_corner));
+  utils::logmesg(lmp,fmt::format("  {} free edges",nfree_edge));
+  utils::logmesg(lmp,fmt::format("  {} free corner points",nfree_corner));
+  utils::logmesg(lmp,fmt::format("  {} min edge length",minedge));
+  utils::logmesg(lmp,fmt::format("  {} max edge length",maxedge));
+  utils::logmesg(lmp,fmt::format("  {} min tri area",minarea));
+  utils::logmesg(lmp,fmt::format("  {} max tri area",maxarea));
 }
 
 /* ----------------------------------------------------------------------
