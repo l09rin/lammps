@@ -457,7 +457,7 @@ FixSurfaceGlobal::~FixSurfaceGlobal()
       delete [] motions[i].vzvarstr;
     }
   }
-  
+
   memory->sfree(motions);
   delete [] type2motion;
 
@@ -559,7 +559,7 @@ void FixSurfaceGlobal::init()
   for (int i = 0; i < nmotion; i++) {
     Motion *motion = &motions[i];
     if (motion->mstyle != VARIABLE) continue;
-    
+
     if (motion->xvarstr) {
       motion->xvar = input->variable->find(motion->xvarstr);
       if (motion->xvar < 0)
@@ -645,7 +645,7 @@ void FixSurfaceGlobal::initial_integrate(int vflag)
   }
 
   // invoke appropriate move option for each surf
-  
+
   for (int i = 0; i < nsurf; i++) {
     if (dimension == 2) imotion = type2motion[lines[i].type];
     else imotion = type2motion[tris[i].type];
@@ -851,7 +851,7 @@ void FixSurfaceGlobal::post_force(int vflag)
   double dr[3],contact[3],ds[3],xc[3],vc[3],omegac[3],*forces,*torquesi;
   double *history,*allhistory,**firsthistory;
 
-  double dot, overlap, max_overlap, norm, *knorm;
+  double dot, overlap, max_overlap, norm, *knorm, tmp[3];
   int it, jjtmp, connection_type, aflag, endpt_flag;
   std::unordered_set<int> *processed_contacts = new std::unordered_set<int>();
   std::map<int, int> *contacts_map = new std::map<int, int>();
@@ -920,7 +920,7 @@ void FixSurfaceGlobal::post_force(int vflag)
     ztmp = x[i][2];
     radi = radius[i];
     model->xi = x[i];
-    model->radi = radius[i];
+    model->radi = radi;
     model->vi = v[i];
     model->omegai = omega[i];
     if (heat_flag) model->Ti = temperature[i];
@@ -1019,7 +1019,7 @@ void FixSurfaceGlobal::post_force(int vflag)
         contact_surfs[n_contact_surfs].neigh_index = jj;
         contact_surfs[n_contact_surfs].type = lines[j].type;
         contact_surfs[n_contact_surfs].jflag = jflag;
-        contact_surfs[n_contact_surfs].overlap = sqrt(rsq) - radsum;
+        contact_surfs[n_contact_surfs].overlap = radi - sqrt(rsq);
         contact_surfs[n_contact_surfs].r[0] = dr[0];
         contact_surfs[n_contact_surfs].r[1] = dr[1];
         contact_surfs[n_contact_surfs].r[2] = dr[2];
@@ -1129,22 +1129,25 @@ void FixSurfaceGlobal::post_force(int vflag)
           omegac[k] = 0.0;
         }
 
+        // Use overlap-weighted average normal vector but maximum overlap
         for (it = 0; it < force_surfs->size(); it++) {
           m = (*force_surfs)[it];
-          overlap = fabs(contact_surfs[m].overlap);
+          overlap = contact_surfs[m].overlap;
           max_overlap = MAX(max_overlap, overlap);
           norm += overlap * overlap;
 
+          MathExtra::copy3(contact_surfs[m].r, tmp);
+          MathExtra::norm3(tmp);
           for (k = 0; k < 3; k++) {
-            xc[k] += contact_surfs[m].r[k] * overlap;
-            vc[k] += vsurf[contact_surfs[m].index][k] * overlap;
+            xc[k] += tmp[k] * overlap;
+            vc[k] += vsurf[contact_surfs[m].index][k] * overlap; //TODO: correct
             omegac[k] += omegasurf[contact_surfs[m].index][k] * overlap;
           }
         }
 
         norm = 1.0 / norm;
         for (k = 0; k < 3; k++) {
-          xc[k] = model->xi[k] - model->xj[k] * max_overlap * norm;
+          xc[k] = x[i][k] - xc[k] * max_overlap * norm;
           vc[k] *= norm;
           omegac[k] *= norm;
         }
@@ -1153,7 +1156,7 @@ void FixSurfaceGlobal::post_force(int vflag)
         overlap = contact_surfs[m].overlap;
 
         for (k = 0; k < 3; k++) {
-          xc[k] = model->xi[k] - contact_surfs[m].r[k] * overlap;
+          xc[k] = x[i][k] - contact_surfs[m].r[k];
           vc[k] = vsurf[contact_surfs[m].index][k];
           omegac[k] = omegasurf[contact_surfs[m].index][k];
         }
@@ -1205,6 +1208,7 @@ void FixSurfaceGlobal::post_force(int vflag)
 
       forces = model->forces;
       torquesi = model->torquesi;
+
       add3(f[i], forces, f[i]);
       add3(torque[i], torquesi, torque[i]);
       if (heat_flag) heatflow[i] += model->dq;
@@ -1264,7 +1268,7 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
       // b/c specification of types for "none" was incomplete
 
       int imotion;
-      
+
       count = 0;
       if (dimension == 2) {
         for (int i = 0; i < nlines; i++) {
@@ -1283,14 +1287,14 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
       if (count)
         error->all(FLERR,fmt::format("Fix_modify move none left {} surfs assigned inactive motion",count));
 
-      // stats 
-      
+      // stats
+
       utils::logmesg(lmp,"Fix_modify move:\n");
       utils::logmesg(lmp,fmt::format("  turned off motion for {} surfs\n",count));
 
       // reset anymove and anymove_variable
       // if no anymove, deallocate memory and turn off INITIAL_INTEGRATE
-      
+
       anymove = 0;
       for (int i = 1; i <= maxsurftype; i++)
         if (type2motion[i] >= 0) anymove = 1;
@@ -1299,7 +1303,7 @@ int FixSurfaceGlobal::modify_param(int narg, char **arg)
       for (int i = 0; i < nmotion; i++)
         if (motions[i].active && motions[i].mstyle == VARIABLE)
           anymove_variable = 1;
-      
+
       if (!anymove) {
         memory->destroy(points_lastneigh);
         memory->destroy(points_original);
@@ -2979,11 +2983,11 @@ void FixSurfaceGlobal::stats3d()
     if (connect3d[i].ne3 == 0) nfree_edge++;
 
     // a free corner point requires 2 adjacent edges also have no connections
-    
+
     if (connect3d[i].nc1 == 0 && (connect3d[i].ne3 == 0 && connect3d[i].ne1 == 0)) nfree_corner++;
     if (connect3d[i].nc2 == 0 && (connect3d[i].ne1 == 0 && connect3d[i].ne2 == 0)) nfree_corner++;
     if (connect3d[i].nc3 == 0 && (connect3d[i].ne2 == 0 && connect3d[i].ne3 == 0)) nfree_corner++;
-    
+
     MathExtra::sub3(points[tris[i].p1].x,points[tris[i].p2].x,delta);
     size = MathExtra::len3(delta);
     minedge = MIN(minedge,size);
@@ -3585,7 +3589,7 @@ void FixSurfaceGlobal::move_variable(int imotion, int i)
   // if displacement is variable, set x
   // if only velocity is variable, time-integrate x using v
   // if neither is variable, no change to x
-  
+
   int pindex;
   double *pt;
 
