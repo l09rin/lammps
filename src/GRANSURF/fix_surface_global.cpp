@@ -2161,9 +2161,9 @@ void FixSurfaceGlobal::check_molecules()
       imol = lines[i].mol;
       neigh_p1 = connect2d[i].neigh_p1;
       neigh_p2 = connect2d[i].neigh_p2;
-      for (m = 0; m < connect2d[i].np1; i++)
+      for (m = 0; m < connect2d[i].np1; m++)
         if (imol != lines[neigh_p1[m]].mol) flag++;
-      for (m = 0; m < connect2d[i].np2; i++)
+      for (m = 0; m < connect2d[i].np2; m++)
         if (imol != lines[neigh_p2[m]].mol) flag++;
     }
     flag /= 2;
