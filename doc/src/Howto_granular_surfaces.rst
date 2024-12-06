@@ -91,12 +91,13 @@ of granular interactions for individual triangles/lines.  Different
 styles can be used within a single object consisting of connected
 triangles/lines.  See the Surface Connectivity section below.
 
-Molecule IDs are intended to be assigned uniquely to each
-inter-connected set of triangles/lines, as if each object were a
-"molecule".  However, this is not required, and LAMMPS does not check
-that this is the case.  LAMMPS will however issue a warning if a set
-of inter-connected triangles/lines do not all have the same molecule
-ID, in case this was not intentional.
+Molecule IDs are not currently used by granular surface interactions,
+though they may be in the future.  They are intended to be assigned
+uniquely to each inter-connected set of triangles/lines, as if each
+object were a "molecule".  However, this is not required, and LAMMPS
+does not check that this is the case.  LAMMPS will issue a warning if
+a set of inter-connected triangles/lines do not all have the same
+molecule ID, in case this was not intentional.
 
 For local surfaces, the molecule ID can be used to define groups and
 thus assign different motions to different surface objects.  See the
