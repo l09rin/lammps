@@ -256,7 +256,7 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
         error->all(FLERR,"Fix surface/global smaxtype < input surf types");
       maxsurftype = smaxtype;
       iarg += 2;
-    } else if (strcmp(arg[iarg],"flag") == 0) {
+    } else if (strcmp(arg[iarg],"flat") == 0) {
       if (iarg+2 > narg) error->all(FLERR,"Illegal fix surface/global command");
       double flat = utils::numeric(FLERR,arg[iarg+1],false,lmp);
       if (flat < 0.0 || flat > 90.0)
