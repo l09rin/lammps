@@ -122,8 +122,8 @@ molecule (header keyword = inertia).
 
    .. note::
 
-   For molecule files defining line segments or triangles, only the
-   the *scale* keyword is ignored.
+   For molecule files defining line segments or triangles, the *scale*
+   keyword is ignored.
 
 .. note::
 

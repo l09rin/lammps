@@ -98,7 +98,7 @@ Each molecule file must define triangles or lines, not atoms.  For
 multiple molecule files, the set of surfaces used by this command will
 be the union of the triangles and lines from all the molecule files.
 Note that each line/triangle in a molecule file is assigned a type and
-molecule-ID.
+molecule ID.
 
 An STL (stereolithography) file defines a set of triangles.  For use
 with this command, the *source* argument of the *input* keyword is
@@ -107,7 +107,8 @@ triangles from the file.  Note that STL files do not contain types or
 other flags for each triangle.  The *stlfile* argument is the name of
 the STL file.  It can be in text or binary format; this command
 auto-detects the format.  Note that STL files cannot be used for 2d
-simulations since they only define triangles.
+simulations since they only define triangles.  Each triangle in an STL
+file is assigned a molecule ID = 1.
 
 This `Wikepedia page
 <https://en.wikipedia.org/wiki/STL_(file_format)>`_ describes the
@@ -291,10 +292,20 @@ middle asterisk means all types from m to n (inclusive).
 The *mstyle* argument is one of the listed styles above.  The *none*
 style turns off motion which was previously enabled, e.g. stops the
 rotation of an object.  Again, the list of surface types must include
-all the surfaces in a connected object.  The other styles and their
-effects on motion are the same as those defined by the :doc:`fix move
-<fix_move>` command.  Their arguments are also the same as those
+all the surfaces in a connected object.  The other *move* styles and
+their effects on motion are the same as those defined by the :doc:`fix
+move <fix_move>` command.  Their arguments are also the same as those
 documented by the :doc:`fix move <fix_move>` command.
+
+The move *variable* style for this command is more limited than for
+the :doc:`fix move <fix_move>` command.  Only an equal-style variable
+can be used, as defined by the :doc:`variable <variable>`.  Atom-style
+variables cannot be used.  Also, if both the displacement and velocity
+variables for a particular x,y,z component are specified as NULL, then
+no change is made to those position or velococity components of an
+individual triangle/line, which is different than the explanation
+given by the :doc:`fix move <fix_move>` command for individual
+particles.
 
 Note that for *local* surfaces the same motion operations can be
 performed using the :doc:`fix move <fix_move>` command with a group-ID
@@ -333,7 +344,14 @@ command.  This fix is not invoked during :doc:`energy minimization
 Restrictions
 """"""""""""
 
-none
+Molecule IDs are not currently used by granular surface interactions,
+though they may be in the future.  They are intended to be assigned
+uniquely to each inter-connected set of triangles/lines, as if each
+object were a "molecule".  However, this is not required, and LAMMPS
+does not check that this is the case.  LAMMPS will issue a warning if
+a set of inter-connected triangles/lines do not all have the same
+molecule ID, in case this was not intentional.
+
 
 Related commands
 """"""""""""""""

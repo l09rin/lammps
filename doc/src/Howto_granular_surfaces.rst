@@ -70,6 +70,42 @@ distributed along with any particles the data file includes.
 
 ----------
 
+Surface attributes
+""""""""""""""""""
+
+For both global and local surfaces, each triangle/line is assigned a
+*type* and a *molecule ID*.  This is done when surfaces are read-in
+from a molecule, STL, or data file.  Since STL files do not define
+types or molecule IDs, the :doc:`fix surface/global
+<fix_surface_global>` and :doc:`fix surface/local <fix_surface_local>`
+commands specify the type that will be assigned to the read-in
+triangles.  The molecule ID for each triangle is set to 1.  The
+:doc:`fix surface/global <fix_surface_global>` command also allows use
+of the :doc:`fix_modify type/region <fix_modify>` command to assign
+types based on a geometric region.  Since local surfaces are
+effectively particles, the :doc:`set <set>` command can be used to
+alter the *type* or *molecule ID* of any triangle or line.
+
+For both global and local surfaces, types are used to define the style
+of granular interactions for individual triangles/lines.  Different
+styles can be used within a single object consisting of connected
+triangles/lines.  See the Surface Connectivity section below.
+
+Molecule IDs are intended to be assigned uniquely to each
+inter-connected set of triangles/lines, as if each object were a
+"molecule".  However, this is not required, and LAMMPS does not check
+that this is the case.  LAMMPS will however issue a warning if a set
+of inter-connected triangles/lines do not all have the same molecule
+ID, in case this was not intentional.
+
+For local surfaces, the molecule ID can be used to define groups and
+thus assign different motions to different surface objects.  See the
+Surface Motion section below.  Various other LAMMPS commands operate
+on groups or molecules and can thus be used to gather statistics about
+or output information about individual surface objects.
+
+----------
+
 Atom styles for granular surfaces
 """""""""""""""""""""""""""""""""
 
@@ -220,15 +256,23 @@ These two commands can be used for that purpose:
 * :doc:`fix move <fix_move>` for *local* surfaces
 
 For *global* surfaces, the :doc:`fix_modify move <fix_modify>` command
-can rotate all the surfaces around a specified axis at a specified
-rate.
+can move a specified subest of the triangles/lines in various ways
+(translation, rotation, etc).  Which triangles move is specified based
+on the *type* of each triangle.  Types are specified when surfaces are
+defined by the :doc:`fix surface/global <fix_surface_global>` command.
+They can also be defined by the :doc:`fix_modify typre/region
+<fix_modify>` command.
 
 For *local* surfaces, the :doc:`fix move <fix_move>` command can move
 a specified subset of the triangles/lines in various ways
-(translation, rotation, etc).
+(translation, rotation, etc).  Which triangles move is specified based
+on the group-ID argument to the :doc:`fix move <fix_move>` command.
+Groups can be defined by the :doc:`group <group>` command.
 
-More options for moving surfaces in prescribed manners will likely be
-added in the future.
+Note that for an object defined by two or more connected
+triangles/lines, it is an error to assign a motion and not include all
+the connected triangles/lines, since this would break the connections.
+LAMMPS does NOT check that this requirement is met.
 
 ----------
 
