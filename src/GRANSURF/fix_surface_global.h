@@ -202,8 +202,10 @@ class FixSurfaceGlobal : public Fix {
   // per-surface 2d/3d connectivity
 
   struct Connect2d {      // line connectivity
-    int np1,np2;          // # of lines connected to endpts 1/2 (NOT including self)
-
+    
+                          // counts, not including self
+    int np1,np2;          // # of lines connected to endpts 1/2
+    
                           // pairs of endpoint connections
     int *neigh_p1;        // indices of lines connected to endpt 1
     int *neigh_p2;        // ditto for connections to endpt 2
@@ -220,8 +222,11 @@ class FixSurfaceGlobal : public Fix {
   };
 
   struct Connect3d {      // tri connectivity
-    int ne1,ne2,ne3;      // # of tris connected to edges 1,2,3 (NOT including self)
-    int nc1,nc2,nc3;      // # of tris connected to corner pts 1,2,3 (NOT self)
+
+                          // counts, not including self
+                          // also not including edge-connected tris for corner pts
+    int ne1,ne2,ne3;      // # of tris connected to edges 1,2,3
+    int nc1,nc2,nc3;      // # of tris connected to corner pts 1,2,3
 
                           // pairs of edge connections
     int *neigh_e1;        // indices of tris connected to edge 1

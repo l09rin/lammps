@@ -32,10 +32,8 @@
 // NOTE: need to order connections with FLAT first ?
 // NOTE: more efficient neighbor lists, see Joel's 18 Nov email for ideas
 
-// doc: can use scale keyword in the molecule command for lines/tris
-// doc: molID warning - rules of thumb for mols and types of each surf
-// doc: how VARIABLE works, a little diff versus fix move, which can use forces to time-integrate
-//      only for equal-style vars
+// NOTE: Possible to check that motion includes all lines/tris in
+//       a connected object?  But not easily possible for local surfs ?
 
 #include "fix_surface_global.h"
 

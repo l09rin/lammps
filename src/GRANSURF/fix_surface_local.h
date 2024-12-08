@@ -32,11 +32,24 @@ class FixSurfaceLocal : public Fix {
   // 2d/3d connectivity
 
   struct Connect2d {      // line connectivity
-    int np1,np2;          // # of lines connected to pts 1,2 (including self)
-    tagint *neigh_p1;     // IDs of all lines connected to pt1 (if np1 > 1)
-    tagint *neigh_p2;     // ditto for pt2
-    int flags;            // future flags for end pt coupling
-    int indexp1,indexp2;  // pool indices of neigh_p12 chunks
+    
+                          // counts, not including self
+    int np1,np2;          // # of lines connected to endpts 1/2
+
+                          // pairs of endpoint connections
+    tagint *neigh_p1;     // IDs of lines connected to endpt 1
+    tagint *neigh_p2;     // ditto for connections to endpt 2
+    int *pwhich_p1;       // which point (0,1) on other line is endpt 1
+    int *pwhich_p2;       // ditto for endpt 2
+    int *nside_p1;        // consistency of other line normal
+    int *nside_p2;        // ditto for endpt 2
+                          //   SAME_SIDE = 2 normals are on same side of surf
+                          //   OPPOSITE_SIDE = opposite sides of surf
+    int *aflag_p1;        // is this line + other line a FLAT,CONCAVE,CONVEX surf
+    int *aflag_p2;        // ditto for endpt 2
+                          //   surf = on normal side of this line
+                          //   aflag = FLAT, CONCAVE, CONVEX
+    
     int ilocal;           // local index of line particle
   };
 
@@ -49,22 +62,15 @@ class FixSurfaceLocal : public Fix {
     tagint *neigh_c1;     // IDs of all tris connected to corner pt 1 (if nc1 > 1)
     tagint *neigh_c2;     // ditto for corner pt 2
     tagint *neigh_c3;     // ditto for corner pt 3
-    int flags;            // future flags for edge and corner pt coupling
+    
     int indexe1,indexe2,indexe3;   // pool indices of neigh_e123 chunks
     int indexc1,indexc2,indexc3;   // pool indices of neigh_c123 chunks
     int ilocal;           // local index of triangle particle
   };
 
-  // NOTE: can some of these be private ?
-
-  int *cindex;            // per-atom index into connect 2d/3d vecs, -1 if none
   Connect2d *connect2d;         // 2d connection info
   Connect3d *connect3d;         // 3d connection info
-  MyPoolChunk<tagint> *tcp;     // allocator for 2d/3d connectivity vecs
-
-  // size of local/ghost connection info vectors
-
-  int nlocal_connect,nghost_connect,nmax_connect;
+  int nmax_connect;             // allocated size of connect2d/3d
 
   FixSurfaceLocal(class LAMMPS *, int, char **);
   virtual ~FixSurfaceLocal();
@@ -93,6 +99,32 @@ class FixSurfaceLocal : public Fix {
   class AtomVecLine *avec_line;
   class AtomVecTri *avec_tri;
 
+  // memory allocation for tagint and int vectors in Connect 2d/3d
+
+  MyPoolChunk<tagint> *tcp;     // allocator for 2d/3d connectivity vecs
+
+  struct Pool2d {
+    int neigh_p1,neigh_p2;    // pool indices of neigh_p12 chunks
+    int pwhich_p1,pwhich_p2;  // pool indices of pwhich_p12 chunks
+    int nside_p1,nside_p2;    // pool indices of nside_p12 chunks
+    int aflag_p1,aflag_p2;    // pool indices of aflag_p12 chunks
+  };
+
+  struct Pool3d {
+    int neigh_e1,neigh_e2,neigh_e3;    // pool indices of neigh_e123 chunks
+    int neigh_c1,neigh_c2,neigh_c3;    // pool indices of neigh_c123 chunks
+  };
+
+  Pool2d *pool2d;               // pool indices of connect2d vectors
+  Pool3d *pool3d;               // pool indices of connect3d vectors
+
+  int *atom2connect;       // per-atom index into connect 2d/3d vecs, -1 if none
+  int *connect2atom;       // per-connect index into atoms
+
+  // size of local/ghost connection info vectors
+
+  int nlocal_connect,nghost_connect;
+  
   // data structs for calculating global connectivity of line/tri particles
   // only used by Rvous comm during setup
 

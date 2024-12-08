@@ -539,7 +539,6 @@ void PairTriGranHookeHistory::init_style()
     }
   }
   if (!fsl) error->all(FLERR,"Pair tri/gran requires a fix surface/local");
-  tcp = fsl->tcp;
 
   // surfmoveflag = 1 if surfs may move at every step
   // yes if fix move exists and its group includes tris

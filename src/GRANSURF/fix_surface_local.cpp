@@ -29,17 +29,22 @@
 using namespace LAMMPS_NS;
 using namespace FixConst;
 
+// NOTE: change defines to static const in both files
+// NOTE: need to populate rest of Connect2d vectors
 // NOTE: epsilon should be defined as fraction of max surf size ?
+// NOTE: one allocater for ints, one for tagints ?
+// NOTE: what if lines/tris already exist (from data file)
+//       when read more from STL or molecule file ?
 
 #define EPSILON 0.001
 #define NBIN 100
 #define BIG 1.0e20
 #define MAXLINE 256
-#define MAXTRIPOINT 24          // NOTE: what should these 2 max line/tri values be
+#define MAXTRIPOINT 24      // NOTE: what should these 2 max line/tri values be
 
 #define DELTA 128
-#define DELTA_CONNECT 4            // NOTE: make it larger when done testing
-#define DELTA_RVOUS 8              // must be >= 8, make it bigger when done testing
+#define DELTA_CONNECT 4     // NOTE: make it larger when done testing
+#define DELTA_RVOUS 8       // must be >= 8, make it bigger when done testing
 
 static constexpr int RVOUS = 1;   // 0 for irregular, 1 for all2all
 
@@ -61,7 +66,7 @@ FixSurfaceLocal::FixSurfaceLocal(LAMMPS *lmp, int narg, char **arg) :
 
   dimension = domain->dimension;
 
-  cindex = nullptr;
+  atom2connect = nullptr;
   grow_arrays(atom->nmax);
   atom->add_callback(0);
   atom->add_callback(2);
@@ -69,10 +74,15 @@ FixSurfaceLocal::FixSurfaceLocal(LAMMPS *lmp, int narg, char **arg) :
   nlocal_connect = nghost_connect = nmax_connect = 0;
   connect2d = nullptr;
   connect3d = nullptr;
-
+  pool2d = nullptr;
+  pool3d = nullptr;
+  connect2atom = nullptr;
+  
   // NOTE: is this an optimal way to initialize MyPoolChunk?
   //       how to set and limit MAXTRIPOINT ?
-
+  // NOTE: need 2 of these for tagint and int
+  // NOTE: check if allocs from 2 pools are optimal
+  
   tcp = new MyPoolChunk<tagint>(1,MAXTRIPOINT,6);
 
   // 3 possible sources of lines/tris
@@ -102,15 +112,22 @@ FixSurfaceLocal::~FixSurfaceLocal()
   atom->delete_callback(id,0);
 
   delete [] sourceID;
-  memory->destroy(cindex);
+  memory->destroy(atom2connect);
+  memory->destroy(connect2atom);
 
   // return all connection vector memory to TCP
 
   if (dimension == 2) {
     int nall = nlocal_connect + nghost_connect;
     for (int i = 0; i < nall; i++) {
-      if (connect2d[i].neigh_p1) tcp->put(connect2d[i].indexp1);
-      if (connect2d[i].neigh_p2) tcp->put(connect2d[i].indexp2);
+      if (connect2d[i].neigh_p1) tcp->put(pool2d[i].neigh_p1);
+      if (connect2d[i].neigh_p2) tcp->put(pool2d[i].neigh_p2);
+      if (connect2d[i].neigh_p1) tcp->put(pool2d[i].pwhich_p1);
+      if (connect2d[i].neigh_p2) tcp->put(pool2d[i].pwhich_p2);
+      if (connect2d[i].neigh_p1) tcp->put(pool2d[i].nside_p1);
+      if (connect2d[i].neigh_p2) tcp->put(pool2d[i].nside_p2);
+      if (connect2d[i].neigh_p1) tcp->put(pool2d[i].aflag_p1);
+      if (connect2d[i].neigh_p2) tcp->put(pool2d[i].aflag_p2);
     }
     memory->sfree(connect2d);
   } else {
@@ -125,6 +142,9 @@ FixSurfaceLocal::~FixSurfaceLocal()
     }
     memory->sfree(connect3d);
   }
+
+  memory->sfree(pool2d);
+  memory->sfree(pool3d);
 
   delete tcp;
 }
@@ -244,7 +264,7 @@ void FixSurfaceLocal::post_constructor()
 
 void FixSurfaceLocal::grow_arrays(int nmax)
 {
-  memory->grow(cindex,nmax,"surface/local:cindex");
+  memory->grow(atom2connect,nmax,"surface/local:atom2connect");
 }
 
 /* ---------------------------------------------------------------------- */
@@ -256,8 +276,8 @@ void FixSurfaceLocal::setup_pre_neighbor()
 
 /* ----------------------------------------------------------------------
    only for DEBUGGING
-   check that index vector is identical to line/tri
-   check that index vector is consistent with connect->ilocal
+   check that atom2connect is identical to line/tri
+   check that atom2connect is consistent with connect2atom
 ------------------------------------------------------------------------- */
 
 void FixSurfaceLocal::pre_neighbor()
@@ -273,12 +293,11 @@ void FixSurfaceLocal::pre_neighbor()
   for (int i = 0; i < n; i++) {
     if (surf[i] < 0) continue;
 
-    if (cindex[i] != surf[i]) {
+    if (atom2connect[i] != surf[i]) {
       count1++;
       continue;
     }
-    if (dimension == 2 && connect2d[cindex[i]].ilocal != i) count2++;
-    if (dimension == 3 && connect3d[cindex[i]].ilocal != i) count2++;
+    if (connect2atom[atom2connect[i]] != i) count2++;
   }
 
   int all1,all2;
@@ -287,7 +306,7 @@ void FixSurfaceLocal::pre_neighbor()
 
   if (all1 || all2 && comm->me == 0) {
     char str[128];
-    sprintf(str,"FSL cindex vector mis-match: %d %d\n",all1,all2);
+    sprintf(str,"FSL atom2connect vector mis-match: %d %d\n",all1,all2);
     error->warning(FLERR,str);
   }
 }
@@ -303,14 +322,23 @@ void FixSurfaceLocal::grow_connect()
   if (newmax > MAXSMALLINT) error->one(FLERR,"Too many fix surface/local connections");
   nmax_connect = newmax;
 
-  if (dimension == 2)
+  memory->grow(connect2atom,nmax_connect,"surface/local:connect2atom");
+
+  if (dimension == 2) {
     connect2d = (Connect2d *)
       memory->srealloc(connect2d,nmax_connect*sizeof(Connect2d),
                        "surface/local:connect2d");
-  else
+    pool2d = (Pool2d *)
+      memory->srealloc(pool2d,nmax_connect*sizeof(Pool2d),
+                       "surface/local:pool2d");
+  } else {
     connect3d = (Connect3d *)
       memory->srealloc(connect3d,nmax_connect*sizeof(Connect3d),
                        "surface/local:connect3d");
+    pool3d = (Pool3d *)
+      memory->srealloc(pool3d,nmax_connect*sizeof(Pool3d),
+                       "surface/local:pool3d");
+  }
 }
 
 /* ----------------------------------------------------------------------
@@ -325,37 +353,45 @@ void FixSurfaceLocal::copy_arrays(int i, int j, int delflag)
   //   shrink list of owned connections by copying last element to Kth location
 
   if (dimension == 2) {
-    if (delflag && cindex[j] >= 0) {
-      int k = cindex[j];
-      if (connect2d[k].neigh_p1) tcp->put(connect2d[k].indexp1);
-      if (connect2d[k].neigh_p2) tcp->put(connect2d[k].indexp2);
-      cindex[connect2d[nlocal_connect-1].ilocal] = k;
+    if (delflag && atom2connect[j] >= 0) {
+      int k = atom2connect[j];
+      if (connect2d[k].neigh_p1) {
+        tcp->put(pool2d[k].neigh_p1);
+        tcp->put(pool2d[k].pwhich_p1);
+        tcp->put(pool2d[k].nside_p1);
+        tcp->put(pool2d[k].aflag_p1);
+      }
+      if (connect2d[k].neigh_p2) {
+        tcp->put(pool2d[k].neigh_p2);
+        tcp->put(pool2d[k].pwhich_p2);
+        tcp->put(pool2d[k].nside_p2);
+        tcp->put(pool2d[k].aflag_p2);
+      }
+      atom2connect[connect2atom[nlocal_connect-1]] = k;
       memcpy(&connect2d[k],&connect2d[nlocal_connect-1],sizeof(Connect2d));
+      memcpy(&pool2d[k],&pool2d[nlocal_connect-1],sizeof(Pool2d));
       nlocal_connect--;
     }
   } else {
-    if (delflag && cindex[j] >= 0) {
-      int k = cindex[j];
+    if (delflag && atom2connect[j] >= 0) {
+      int k = atom2connect[j];
       if (connect3d[k].neigh_e1) tcp->put(connect3d[k].indexe1);
       if (connect3d[k].neigh_e2) tcp->put(connect3d[k].indexe2);
       if (connect3d[k].neigh_e3) tcp->put(connect3d[k].indexe3);
       if (connect3d[k].neigh_c1) tcp->put(connect3d[k].indexc1);
       if (connect3d[k].neigh_c2) tcp->put(connect3d[k].indexc2);
       if (connect3d[k].neigh_c3) tcp->put(connect3d[k].indexc3);
-      cindex[connect3d[nlocal_connect-1].ilocal] = k;
+      atom2connect[connect2atom[nlocal_connect-1]] = k;
       memcpy(&connect3d[k],&connect3d[nlocal_connect-1],sizeof(Connect3d));
       nlocal_connect--;
     }
   }
 
-  // if atom I has connection data, reset I's connect.ilocal to loc J
+  // if atom I has connection data, reset connect2atom[I] to loc J
   // do NOT do this if self-copy (I=J) since I's connection data is already deleted
 
-  if (cindex[i] >= 0 && i != j) {
-    if (dimension == 2) connect2d[cindex[i]].ilocal = j;
-    else connect3d[cindex[i]].ilocal = j;
-  }
-  cindex[j] = cindex[i];
+  if (atom2connect[i] >= 0 && i != j) connect2atom[atom2connect[i]] = j;
+  atom2connect[j] = atom2connect[i];
 }
 
 /* ----------------------------------------------------------------------
@@ -364,7 +400,7 @@ void FixSurfaceLocal::copy_arrays(int i, int j, int delflag)
 
 void FixSurfaceLocal::set_arrays(int i)
 {
-  cindex[i] = -1;
+  atom2connect[i] = -1;
 }
 
 /* ----------------------------------------------------------------------
@@ -378,8 +414,18 @@ void FixSurfaceLocal::clear_bonus()
   if (dimension == 2) {
     int nall = nlocal_connect + nghost_connect;
     for (int i = nlocal_connect; i < nall; i++) {
-      if (connect2d[i].neigh_p1) tcp->put(connect2d[i].indexp1);
-      if (connect2d[i].neigh_p2) tcp->put(connect2d[i].indexp2);
+      if (connect2d[i].neigh_p1) {
+        tcp->put(pool2d[i].neigh_p1);
+        tcp->put(pool2d[i].pwhich_p1);
+        tcp->put(pool2d[i].nside_p1);
+        tcp->put(pool2d[i].aflag_p1);
+      }
+      if (connect2d[i].neigh_p2) {
+        tcp->put(pool2d[i].neigh_p2);
+        tcp->put(pool2d[i].pwhich_p2);
+        tcp->put(pool2d[i].nside_p2);
+        tcp->put(pool2d[i].aflag_p2);
+      }
     }
   } else if (dimension == 3) {
     int nall = nlocal_connect + nghost_connect;
@@ -411,23 +457,35 @@ int FixSurfaceLocal::pack_border(int n, int *list, double *buf)
 
     for (i = 0; i < n; i++) {
       j = list[i];
-      if (cindex[j] < 0) buf[m++] = ubuf(0).d;
+      if (atom2connect[j] < 0) buf[m++] = ubuf(0).d;
       else {
         buf[m++] = ubuf(1).d;
-        ic = cindex[j];
+        ic = atom2connect[j];
 
         np1 = connect2d[ic].np1;
         np2 = connect2d[ic].np2;
         buf[m++] = ubuf(np1).d;
         buf[m++] = ubuf(np2).d;
-        if (np1 > 1)
+        if (np1) {
           for (k = 0; k < np1; k++)
             buf[m++] = ubuf(connect2d[ic].neigh_p1[k]).d;
-        if (np2 > 1)
+          for (k = 0; k < np1; k++)
+            buf[m++] = ubuf(connect2d[ic].pwhich_p1[k]).d;
+          for (k = 0; k < np1; k++)
+            buf[m++] = ubuf(connect2d[ic].nside_p1[k]).d;
+          for (k = 0; k < np1; k++)
+            buf[m++] = ubuf(connect2d[ic].aflag_p1[k]).d;
+        }
+        if (np2) {
           for (k = 0; k < np2; k++)
             buf[m++] = ubuf(connect2d[ic].neigh_p2[k]).d;
-
-        buf[m++] = ubuf(connect2d[ic].flags).d;
+          for (k = 0; k < np2; k++)
+            buf[m++] = ubuf(connect2d[ic].pwhich_p2[k]).d;
+          for (k = 0; k < np2; k++)
+            buf[m++] = ubuf(connect2d[ic].nside_p2[k]).d;
+          for (k = 0; k < np2; k++)
+            buf[m++] = ubuf(connect2d[ic].aflag_p2[k]).d;
+        }
       }
     }
 
@@ -436,10 +494,10 @@ int FixSurfaceLocal::pack_border(int n, int *list, double *buf)
 
     for (i = 0; i < n; i++) {
       j = list[i];
-      if (cindex[j] < 0) buf[m++] = ubuf(0).d;
+      if (atom2connect[j] < 0) buf[m++] = ubuf(0).d;
       else {
         buf[m++] = ubuf(1).d;
-        ic = cindex[j];
+        ic = atom2connect[j];
 
         ne1 = connect3d[ic].ne1;
         ne2 = connect3d[ic].ne2;
@@ -472,8 +530,6 @@ int FixSurfaceLocal::pack_border(int n, int *list, double *buf)
         if (nc3 > 1)
           for (k = 0; k < nc3; k++)
             buf[m++] = ubuf(connect3d[ic].neigh_c3[k]).d;
-
-        buf[m++] = ubuf(connect3d[ic].flags).d;
       }
     }
   }
@@ -497,7 +553,7 @@ int FixSurfaceLocal::unpack_border(int n, int first, double *buf)
 
     for (i = first; i < last; i++) {
       flag = (int) ubuf(buf[m++]).i;
-      if (flag == 0) cindex[i] = -1;
+      if (flag == 0) atom2connect[i] = -1;
       else {
         j = nlocal_connect + nghost_connect;
         if (j == nmax_connect) grow_connect();
@@ -506,21 +562,49 @@ int FixSurfaceLocal::unpack_border(int n, int first, double *buf)
         np2 = (int) ubuf(buf[m++]).i;
         connect2d[j].np1 = np1;
         connect2d[j].np2 = np2;
-        if (np1 > 1) {
-          connect2d[j].neigh_p1 = tcp->get(np1,connect2d[j].indexp1);
+        
+        if (np1) {
+          connect2d[j].neigh_p1 = tcp->get(np1,pool2d[j].neigh_p1);
           for (k = 0; k < np1; k++)
             connect2d[j].neigh_p1[k] = (tagint) ubuf(buf[m++]).i;
-        } else connect2d[j].neigh_p1 = nullptr;
-        if (np2 > 1) {
-          connect2d[j].neigh_p2 = tcp->get(np2,connect2d[j].indexp2);
-          for (k = 0; k < np2; k++)
+          connect2d[j].pwhich_p1 = tcp->get(np1,pool2d[j].pwhich_p1);
+          for (k = 0; k < np1; k++)
+            connect2d[j].pwhich_p1[k] = (tagint) ubuf(buf[m++]).i;
+          connect2d[j].nside_p1 = tcp->get(np1,pool2d[j].nside_p1);
+          for (k = 0; k < np1; k++)
+            connect2d[j].nside_p1[k] = (tagint) ubuf(buf[m++]).i;
+          connect2d[j].aflag_p1 = tcp->get(np1,pool2d[j].aflag_p1);
+          for (k = 0; k < np1; k++)
+            connect2d[j].aflag_p1[k] = (tagint) ubuf(buf[m++]).i;
+        } else {
+          connect2d[j].neigh_p1 = nullptr;
+          connect2d[j].pwhich_p1 = nullptr;
+          connect2d[j].nside_p1 = nullptr;
+          connect2d[j].aflag_p1 = nullptr;
+        }
+        
+        if (np2) {
+          connect2d[j].neigh_p2 = tcp->get(np1,pool2d[j].neigh_p2);
+          for (k = 0; k < np1; k++)
             connect2d[j].neigh_p2[k] = (tagint) ubuf(buf[m++]).i;
-        } else connect2d[j].neigh_p2 = nullptr;
+          connect2d[j].pwhich_p2 = tcp->get(np1,pool2d[j].pwhich_p2);
+          for (k = 0; k < np1; k++)
+            connect2d[j].pwhich_p2[k] = (tagint) ubuf(buf[m++]).i;
+          connect2d[j].nside_p2 = tcp->get(np1,pool2d[j].nside_p2);
+          for (k = 0; k < np1; k++)
+            connect2d[j].nside_p2[k] = (tagint) ubuf(buf[m++]).i;
+          connect2d[j].aflag_p2 = tcp->get(np1,pool2d[j].aflag_p2);
+          for (k = 0; k < np1; k++)
+            connect2d[j].aflag_p2[k] = (tagint) ubuf(buf[m++]).i;
+        } else {
+          connect2d[j].neigh_p2 = nullptr;
+          connect2d[j].pwhich_p2 = nullptr;
+          connect2d[j].nside_p2 = nullptr;
+          connect2d[j].aflag_p2 = nullptr;
+        }
 
-        connect2d[j].flags = (int) ubuf(buf[m++]).i;
-
-        connect2d[j].ilocal = i;
-        cindex[i] = j;
+        connect2atom[j] = i;
+        atom2connect[i] = j;
         nghost_connect++;
       }
     }
@@ -530,7 +614,7 @@ int FixSurfaceLocal::unpack_border(int n, int first, double *buf)
 
     for (i = first; i < last; i++) {
       flag = (int) ubuf(buf[m++]).i;
-      if (flag == 0) cindex[i] = -1;
+      if (flag == 0) atom2connect[i] = -1;
       else {
         j = nlocal_connect + nghost_connect;
         if (j == nmax_connect) grow_connect();
@@ -579,10 +663,8 @@ int FixSurfaceLocal::unpack_border(int n, int first, double *buf)
             connect3d[j].neigh_c3[k] = (tagint) ubuf(buf[m++]).i;
         } else connect3d[j].neigh_c3 = nullptr;
 
-        connect3d[j].flags = (int) ubuf(buf[m++]).i;
-
-        connect3d[j].ilocal = i;
-        cindex[i] = j;
+        connect2atom[j] = i;
+        atom2connect[i] = j;
         nghost_connect++;
       }
     }
@@ -603,32 +685,44 @@ int FixSurfaceLocal::pack_exchange(int i, double *buf)
   if (dimension == 2) {
     int np1,np2;
 
-    if (cindex[i] < 0) buf[m++] = ubuf(0).d;
+    if (atom2connect[i] < 0) buf[m++] = ubuf(0).d;
     else {
       buf[m++] = ubuf(1).d;
-      int j = cindex[i];
+      int j = atom2connect[i];
 
       np1 = connect2d[j].np1;
       np2 = connect2d[j].np2;
       buf[m++] = ubuf(np1).d;
       buf[m++] = ubuf(np2).d;
-      if (np1 > 1)
+      if (np1) {
         for (k = 0; k < np1; k++)
           buf[m++] = ubuf(connect2d[j].neigh_p1[k]).d;
-      if (np2 > 1)
+        for (k = 0; k < np1; k++)
+          buf[m++] = ubuf(connect2d[j].pwhich_p1[k]).d;
+        for (k = 0; k < np1; k++)
+          buf[m++] = ubuf(connect2d[j].nside_p1[k]).d;
+        for (k = 0; k < np1; k++)
+          buf[m++] = ubuf(connect2d[j].aflag_p1[k]).d;
+      }
+      if (np2) {
         for (k = 0; k < np2; k++)
           buf[m++] = ubuf(connect2d[j].neigh_p2[k]).d;
-
-      buf[m++] = ubuf(connect2d[j].flags).d;
+        for (k = 0; k < np2; k++)
+          buf[m++] = ubuf(connect2d[j].pwhich_p2[k]).d;
+        for (k = 0; k < np2; k++)
+          buf[m++] = ubuf(connect2d[j].nside_p2[k]).d;
+        for (k = 0; k < np2; k++)
+            buf[m++] = ubuf(connect2d[j].aflag_p2[k]).d;
+      }
     }
 
   } else {
     int ne1,ne2,ne3,nc1,nc2,nc3;
 
-    if (cindex[i] < 0) buf[m++] = ubuf(0).d;
+    if (atom2connect[i] < 0) buf[m++] = ubuf(0).d;
     else {
       buf[m++] = ubuf(1).d;
-      int j = cindex[i];
+      int j = atom2connect[i];
 
       ne1 = connect3d[j].ne1;
       ne2 = connect3d[j].ne2;
@@ -661,8 +755,6 @@ int FixSurfaceLocal::pack_exchange(int i, double *buf)
       if (nc3 > 1)
         for (k = 0; k < nc3; k++)
           buf[m++] = ubuf(connect3d[j].neigh_c3[k]).d;
-
-      buf[m++] = ubuf(connect3d[j].flags).d;
     }
   }
 
@@ -682,7 +774,7 @@ int FixSurfaceLocal::unpack_exchange(int nlocal, double *buf)
     int np1,np2;
 
     flag = (int) ubuf(buf[m++]).i;
-    if (flag == 0) cindex[nlocal] = -1;
+    if (flag == 0) atom2connect[nlocal] = -1;
     else {
       if (nlocal_connect == nmax_connect) grow_connect();
 
@@ -690,27 +782,55 @@ int FixSurfaceLocal::unpack_exchange(int nlocal, double *buf)
       np2 = (int) ubuf(buf[m++]).i;
       connect2d[nlocal_connect].np1 = np1;
       connect2d[nlocal_connect].np2 = np2;
-      if (np1 > 1) {
-        connect2d[nlocal_connect].neigh_p1 = tcp->get(np1,connect2d[nlocal_connect].indexp1);
+
+      if (np1) {
+        connect2d[nlocal_connect].neigh_p1 = tcp->get(np1,pool2d[nlocal_connect].neigh_p1);
         for (k = 0; k < np1; k++)
           connect2d[nlocal_connect].neigh_p1[k] = (tagint) ubuf(buf[m++]).i;
-      } else connect2d[nlocal_connect].neigh_p1 = nullptr;
-      if (np2 > 1) {
-        connect2d[nlocal_connect].neigh_p2 = tcp->get(np2,connect2d[nlocal_connect].indexp2);
-        for (k = 0; k < np2; k++)
+        connect2d[nlocal_connect].pwhich_p1 = tcp->get(np1,pool2d[nlocal_connect].pwhich_p1);
+        for (k = 0; k < np1; k++)
+          connect2d[nlocal_connect].pwhich_p1[k] = (tagint) ubuf(buf[m++]).i;
+        connect2d[nlocal_connect].nside_p1 = tcp->get(np1,pool2d[nlocal_connect].nside_p1);
+        for (k = 0; k < np1; k++)
+          connect2d[nlocal_connect].nside_p1[k] = (tagint) ubuf(buf[m++]).i;
+        connect2d[nlocal_connect].aflag_p1 = tcp->get(np1,pool2d[nlocal_connect].aflag_p1);
+        for (k = 0; k < np1; k++)
+          connect2d[nlocal_connect].aflag_p1[k] = (tagint) ubuf(buf[m++]).i;
+      } else {
+        connect2d[nlocal_connect].neigh_p1 = nullptr;
+        connect2d[nlocal_connect].pwhich_p1 = nullptr;
+        connect2d[nlocal_connect].nside_p1 = nullptr;
+        connect2d[nlocal_connect].aflag_p1 = nullptr;
+      }
+      if (np1) {
+        connect2d[nlocal_connect].neigh_p2 = tcp->get(np1,pool2d[nlocal_connect].neigh_p2);
+        for (k = 0; k < np1; k++)
           connect2d[nlocal_connect].neigh_p2[k] = (tagint) ubuf(buf[m++]).i;
-      } else connect2d[nlocal_connect].neigh_p2 = nullptr;
+        connect2d[nlocal_connect].pwhich_p2 = tcp->get(np1,pool2d[nlocal_connect].pwhich_p2);
+        for (k = 0; k < np1; k++)
+          connect2d[nlocal_connect].pwhich_p2[k] = (tagint) ubuf(buf[m++]).i;
+        connect2d[nlocal_connect].nside_p2 = tcp->get(np1,pool2d[nlocal_connect].nside_p2);
+        for (k = 0; k < np1; k++)
+          connect2d[nlocal_connect].nside_p2[k] = (tagint) ubuf(buf[m++]).i;
+        connect2d[nlocal_connect].aflag_p2 = tcp->get(np1,pool2d[nlocal_connect].aflag_p2);
+        for (k = 0; k < np1; k++)
+          connect2d[nlocal_connect].aflag_p2[k] = (tagint) ubuf(buf[m++]).i;
+      } else {
+        connect2d[nlocal_connect].neigh_p2 = nullptr;
+        connect2d[nlocal_connect].pwhich_p2 = nullptr;
+        connect2d[nlocal_connect].nside_p2 = nullptr;
+        connect2d[nlocal_connect].aflag_p2 = nullptr;
+      }
 
-      connect2d[nlocal_connect].flags = (int) ubuf(buf[m++]).i;
-      connect2d[nlocal_connect].ilocal = nlocal;
-      cindex[nlocal] = nlocal_connect++;
+      connect2atom[nlocal_connect] = nlocal;
+      atom2connect[nlocal] = nlocal_connect++;
     }
 
   } else {
     int ne1,ne2,ne3,nc1,nc2,nc3;
 
     flag = (int) ubuf(buf[m++]).i;
-    if (flag == 0) cindex[nlocal] = -1;
+    if (flag == 0) atom2connect[nlocal] = -1;
     else {
       if (nlocal_connect == nmax_connect) grow_connect();
 
@@ -758,9 +878,8 @@ int FixSurfaceLocal::unpack_exchange(int nlocal, double *buf)
           connect3d[nlocal_connect].neigh_c3[k] = (tagint) ubuf(buf[m++]).i;
       } else connect3d[nlocal_connect].neigh_c3 = nullptr;
 
-      connect3d[nlocal_connect].flags = (int) ubuf(buf[m++]).i;
-      connect3d[nlocal_connect].ilocal = nlocal;
-      cindex[nlocal] = nlocal_connect++;
+      connect2atom[nlocal_connect] = nlocal;
+      atom2connect[nlocal] = nlocal_connect++;
     }
   }
 
@@ -769,15 +888,24 @@ int FixSurfaceLocal::unpack_exchange(int nlocal, double *buf)
 
 /* ----------------------------------------------------------------------
    memory usage of local atom-based array
-   // NOTE: need to also tally pages in tcp
+   NOTE: need to also tally pages in tcp
 ------------------------------------------------------------------------- */
 
 double FixSurfaceLocal::memory_usage()
 {
   double bytes = 0.0;
-  if (dimension == 2) bytes = nmax_connect*sizeof(Connect2d);
-  else bytes = nmax_connect*sizeof(Connect3d);
-  bytes += atom->nmax * sizeof(int);               // cindex vector
+  
+  if (dimension == 2) {
+    bytes = nmax_connect*sizeof(Connect2d);
+    bytes = nmax_connect*sizeof(Pool2d);
+  } else {
+    bytes = nmax_connect*sizeof(Connect3d);
+    bytes = nmax_connect*sizeof(Pool3d);
+  }
+  
+  bytes += atom->nmax * sizeof(int);               // atom2connect vector
+  bytes += nmax_connect * sizeof(int);             // connect2atom vector
+
   return bytes;
 }
 
@@ -824,17 +952,17 @@ void FixSurfaceLocal::connectivity2d_local()
     if (line[i] >= 0) nline++;
 
   // allocate connection info for owned lines
-  // initialize cindex for both particles and lines
+  // initialize atom2connect for both particles and lines
 
   nlocal_connect = nmax_connect = nline;
   nghost_connect = 0;
   grow_connect();
 
   for (i = 0; i < nlocal; i++) {
-    cindex[i] = line[i];
+    atom2connect[i] = line[i];
     if (line[i] < 0) continue;
     j = line[i];
-    connect2d[j].ilocal = i;
+    connect2atom[j] = i;
   }
 
   // calculate current endpts of owned lines
@@ -963,6 +1091,9 @@ void FixSurfaceLocal::connectivity2d_local()
   // count # of connections for each point on my lines
   // datums do not include self connection, so count it as well
 
+  // NOTE: in connect2d, need to NOT include any self couns
+  // NOTE: need to add setting of all other fields in Connect2d
+  
   int ilocal,iline,np1,np2;
 
   for (i = 0; i < nlocal_connect; i++)
@@ -977,24 +1108,20 @@ void FixSurfaceLocal::connectivity2d_local()
 
   // allocate neigh_p12 vectors
   // set 1st value of neigh vector to ID of self line
-  // set flags to 0 for now
-
   // NOTE: this will overalloc by potentially 4x ?
 
   for (i = 0; i < nlocal_connect; i++) {
     np1 = connect2d[i].np1;
     if (np1 > 1) {
-      connect2d[i].neigh_p1 = tcp->get(np1,connect2d[i].indexp1);
-      connect2d[i].neigh_p1[0] = tag[connect2d[i].ilocal];
+      connect2d[i].neigh_p1 = tcp->get(np1,pool2d[i].neigh_p1);
+      connect2d[i].neigh_p1[0] = tag[connect2atom[i]];
     } else connect2d[i].neigh_p1 = nullptr;
 
     np2 = connect2d[i].np2;
     if (np2 > 1) {
-      connect2d[i].neigh_p2 = tcp->get(np1,connect2d[i].indexp2);
-      connect2d[i].neigh_p2[0] = tag[connect2d[i].ilocal];
+      connect2d[i].neigh_p2 = tcp->get(np1,pool2d[i].neigh_p2);
+      connect2d[i].neigh_p2[0] = tag[connect2atom[i]];
     } else connect2d[i].neigh_p2 = nullptr;
-
-    connect2d[i].flags = 0;
   }
 
   // loop over received Rvous datums
@@ -1080,17 +1207,17 @@ void FixSurfaceLocal::connectivity3d_local()
     if (tri[i] >= 0) ntri++;
 
   // allocate connection info for owned triangles
-  // initialize cindex for both particles and triangles
+  // initialize atom2connect for both particles and triangles
 
   nlocal_connect = nmax_connect = ntri;
   nghost_connect = 0;
   grow_connect();
 
   for (i = 0; i < nlocal; i++) {
-    cindex[i] = tri[i];
+    atom2connect[i] = tri[i];
     if (tri[i] < 0) continue;
     j = tri[i];
-    connect3d[j].ilocal = i;
+    connect2atom[j] = i;
   }
 
   // calculate current endpts of owned lines
@@ -1242,30 +1369,25 @@ void FixSurfaceLocal::connectivity3d_local()
 
   // allocate neigh_c123 vectors
   // set 1st value of neigh vector to ID of self tri
-  // set flags to 0 for now
-
-  // NOTE: this will overalloc by potentially 8x ?
 
   for (i = 0; i < nlocal_connect; i++) {
     nc1 = connect3d[i].nc1;
     if (nc1 > 1) {
       connect3d[i].neigh_c1 = tcp->get(nc1,connect3d[i].indexc1);
-      connect3d[i].neigh_c1[0] = tag[connect3d[i].ilocal];
+      connect3d[i].neigh_c1[0] = tag[connect2atom[i]];
     } else connect3d[i].neigh_c1 = nullptr;
 
     nc2 = connect3d[i].nc2;
     if (nc2 > 1) {
       connect3d[i].neigh_c2 = tcp->get(nc2,connect3d[i].indexc2);
-      connect3d[i].neigh_c2[0] = tag[connect3d[i].ilocal];
+      connect3d[i].neigh_c2[0] = tag[connect2atom[i]];
     } else connect3d[i].neigh_c2 = nullptr;
 
     nc3 = connect3d[i].nc3;
     if (nc3 > 1) {
       connect3d[i].neigh_c3 = tcp->get(nc3,connect3d[i].indexc3);
-      connect3d[i].neigh_c3[0] = tag[connect3d[i].ilocal];
+      connect3d[i].neigh_c3[0] = tag[connect2atom[i]];
     } else connect3d[i].neigh_c3 = nullptr;
-
-    connect3d[i].flags = 0;
   }
 
   // loop over received Rvous datums
@@ -1385,19 +1507,19 @@ void FixSurfaceLocal::connectivity3d_local()
     ne1 = connect3d[i].ne1;
     if (ne1 > 1) {
       connect3d[i].neigh_e1 = tcp->get(ne1,connect3d[i].indexe1);
-      connect3d[i].neigh_e1[0] = tag[connect3d[i].ilocal];
+      connect3d[i].neigh_e1[0] = tag[connect2atom[i]];
     } else connect3d[i].neigh_e1 = nullptr;
 
     ne2 = connect3d[i].ne2;
     if (ne2 > 1) {
       connect3d[i].neigh_e2 = tcp->get(ne2,connect3d[i].indexe2);
-      connect3d[i].neigh_e2[0] = tag[connect3d[i].ilocal];
+      connect3d[i].neigh_e2[0] = tag[connect2atom[i]];
     } else connect3d[i].neigh_e2 = nullptr;
 
     ne3 = connect3d[i].ne3;
     if (ne3 > 1) {
       connect3d[i].neigh_e3 = tcp->get(ne3,connect3d[i].indexe3);
-      connect3d[i].neigh_e3[0] = tag[connect3d[i].ilocal];
+      connect3d[i].neigh_e3[0] = tag[connect2atom[i]];
     } else connect3d[i].neigh_e3 = nullptr;
   }
 
@@ -1960,16 +2082,14 @@ void FixSurfaceLocal::extract_from_stlfile(char *filename)
 void FixSurfaceLocal::connectivity2d_global()
 {
   // allocate and initilize global connectivity list
-  // ilocal will be initialized when assign to procs
+  // connect2atom will be initialized when assign to procs
 
   connect2dall = (Connect2d *) memory->smalloc(nlines*sizeof(Connect2d),
                                                "surface/local:connect2dall");
 
-  // setup end point connectivity lists
-  // count # of lines containing each end point
-  // create ragged 2d array to contain all point indices, then fill it
-  // set neigh_p12 vector ptrs in connect2d to rows of ragged array
-  // np12 counts and vectors include self line
+  // setup line end point connectivity lists
+  // counts = # of lines containing each end point (including self)
+  // plines = ragged 2d array with indices of lines which contain each point
 
   int *counts;
   memory->create(counts,npoints,"surface/local:count");
@@ -1981,16 +2101,31 @@ void FixSurfaceLocal::connectivity2d_global()
     counts[lines[i].p2]++;
   }
 
-  memory->create_ragged(plist,npoints,counts,"surface/local:plist");
+  int **plines;
+  memory->create_ragged(plines,npoints,counts,"surface/local:plines");
 
   for (int i = 0; i < npoints; i++) counts[i] = 0;
 
   for (int i = 0; i < nlines; i++) {
-    plist[lines[i].p1][counts[lines[i].p1]++] = i;
-    plist[lines[i].p2][counts[lines[i].p2]++] = i;
+    plines[lines[i].p1][counts[lines[i].p1]++] = i;
+    plines[lines[i].p2][counts[lines[i].p2]++] = i;
   }
 
-  // note that in connect2dall, neigh_p12 stores global line indices (0 to Nlines-1)
+  // p1/p2_counts = # of lines connecting to endpoints p1/p2 of each line
+  // do NOT include self
+
+  int *p1_counts,*p2_counts;
+  memory->create(p1_counts,nlines,"surface/local:p1_counts");
+  memory->create(p2_counts,nlines,"surface/local:p2_counts");
+
+  for (int i = 0; i < nlines; i++) {
+    p1_counts[i] = counts[lines[i].p1] - 1;
+    p2_counts[i] = counts[lines[i].p2] - 1;
+  }
+
+  // NOTE: how much of surf/global connectivity2d() should this method copy?
+  
+  // in connect2dall, neigh_p12 stores global line indices (0 to Nlines-1)
   // in final connect2d, neigh_p12 will store line IDs
 
   for (int i = 0; i < nlines; i++) {
@@ -2019,7 +2154,7 @@ void FixSurfaceLocal::connectivity3d_global()
   int p1,p2,p3;
 
   // allocate and initilize global connectivity list
-  // ilocal will be initialized when assign to procs
+  // connect2atom will be initialized when assign to procs
 
   connect3dall = (Connect3d *) memory->smalloc(ntris*sizeof(Connect3d),
                                                "surface/local:connect3d");
@@ -2099,7 +2234,7 @@ void FixSurfaceLocal::connectivity3d_global()
     elist[tri2edge[i][2]][counts[tri2edge[i][2]]++] = i;
   }
 
-  // note that in connect3dall, neigh_e123 stores global tri indices (0 to Ntri-1)
+  // in connect3dall, neigh_e123 stores global tri indices (0 to Ntri-1)
   // in final connect3d, neigh_e123 will store tri IDs
 
   for (int i = 0; i < ntris; i++) {
@@ -2145,7 +2280,7 @@ void FixSurfaceLocal::connectivity3d_global()
     clist[tris[i].p3][counts[tris[i].p3]++] = i;
   }
 
-  // note that in connect3dall, neigh_c123 stores global tri indices (0 to Ntri-1)
+  // in connect3dall, neigh_c123 stores global tri indices (0 to Ntri-1)
   // in final connect3d, neigh_c123 will store tri IDs
 
   for (int i = 0; i < ntris; i++) {
@@ -2232,7 +2367,7 @@ void FixSurfaceLocal::assign2d()
   }
 
   // idmaxall = largest existing atom ID
-  // set cindex = -1 for all current particles
+  // set atom2connect = -1 for all current particles
 
   tagint *tag = atom->tag;
   int nlocal = atom->nlocal;
@@ -2240,7 +2375,7 @@ void FixSurfaceLocal::assign2d()
   tagint idmax = 0;
   for (int i = 0; i < nlocal; i++) {
     idmax = MAX(tag[i],idmax);
-    cindex[i] = -1;
+    atom2connect[i] = -1;
   }
   tagint idmaxall;
   MPI_Allreduce(&idmax,&idmaxall,1,MPI_LMP_TAGINT,MPI_MAX,world);
@@ -2327,7 +2462,7 @@ void FixSurfaceLocal::assign2d()
       global = connect2d[nlocal_connect].neigh_p1;
       if (num > 1) {
         local = connect2d[nlocal_connect].neigh_p1 =
-          tcp->get(num,connect2d[nlocal_connect].indexp1);
+          tcp->get(num,pool2d[nlocal_connect].neigh_p1);
         for (j = 0; j < num; j++)
           local[j] = global[j] + idmaxall + 1;
       } else connect2d[nlocal_connect].neigh_p1 = nullptr;
@@ -2336,13 +2471,13 @@ void FixSurfaceLocal::assign2d()
       global = connect2d[nlocal_connect].neigh_p2;
       if (num > 1) {
         local = connect2d[nlocal_connect].neigh_p2 =
-          tcp->get(num,connect2d[nlocal_connect].indexp2);
+          tcp->get(num,pool2d[nlocal_connect].neigh_p2);
         for (j = 0; j < num; j++)
           local[j] = global[j] + idmaxall + 1;
       } else connect2d[nlocal_connect].neigh_p2 = nullptr;
 
-      connect2d[nlocal_connect].ilocal = n;
-      cindex[n] = nlocal_connect;
+      connect2atom[nlocal_connect] = n;
+      atom2connect[n] = nlocal_connect;
       nlocal_connect++;
     }
   }
@@ -2423,7 +2558,7 @@ void FixSurfaceLocal::assign3d()
   }
 
   // idmaxall = largest existing atom ID
-  // set cindex = -1 for all current particles
+  // set atom2connect = -1 for all current particles
 
   tagint *tag = atom->tag;
   int nlocal = atom->nlocal;
@@ -2431,7 +2566,7 @@ void FixSurfaceLocal::assign3d()
   tagint idmax = 0;
   for (int i = 0; i < nlocal; i++) {
     idmax = MAX(tag[i],idmax);
-    cindex[i] = -1;
+    atom2connect[i] = -1;
   }
   tagint idmaxall;
   MPI_Allreduce(&idmax,&idmaxall,1,MPI_LMP_TAGINT,MPI_MAX,world);
@@ -2580,8 +2715,8 @@ void FixSurfaceLocal::assign3d()
           local[j] = global[j] + idmaxall + 1;
       } else connect3d[nlocal_connect].neigh_c3 = nullptr;
 
-      connect3d[nlocal_connect].ilocal = n;
-      cindex[n] = nlocal_connect;
+      connect2atom[nlocal_connect] = n;
+      atom2connect[n] = nlocal_connect;
       nlocal_connect++;
     }
   }

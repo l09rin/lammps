@@ -73,7 +73,6 @@ class PairTriGranHookeHistory : public Pair {
 
   class FixSurfaceLocal *fsl;              // ptr to surface/local fix
   FixSurfaceLocal::Connect3d *connect3d;   // ptr to connectivity info
-  MyPoolChunk<int> *tcp;                   // allocator for connectivity info
 
   // storage of rigid body masses for use in granular interactions
 
