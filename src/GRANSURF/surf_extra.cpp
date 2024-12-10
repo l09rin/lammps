@@ -77,6 +77,7 @@ int overlap_sphere_line(double *xsphere, double radius, double *p1, double *p2,
 
   double radsq = radius * radius;
   MathExtra::sub3(xsphere,pt,r);
+
   rsq = MathExtra::lensq3(r);
   if (rsq < radsq) return ptflag;
   return 0;
