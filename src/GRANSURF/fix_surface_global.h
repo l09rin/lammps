@@ -205,7 +205,8 @@ class FixSurfaceGlobal : public Fix {
     
                           // counts, not including self
     int np1,np2;          // # of lines connected to endpts 1/2
-    
+    int flatp1,flatp2;    // whether a flat surface extends from endpts 1/2
+
                           // pairs of endpoint connections
     int *neigh_p1;        // indices of lines connected to endpt 1
     int *neigh_p2;        // ditto for connections to endpt 2
@@ -261,7 +262,7 @@ class FixSurfaceGlobal : public Fix {
   // struct for storing contact data
 
   struct ContactSurf {
-    int index, neigh_index, type, jflag;
+    int index, neigh_index, type, jflag, nside;
     double r[3];
     double overlap;
   };
@@ -286,10 +287,10 @@ class FixSurfaceGlobal : public Fix {
   void check_molecules();
   void stats2d();
   void stats3d();
-  
+
   void surface_attributes();
 
-  void walk_flat_connections2d(int, std::unordered_set<int> *, std::map<int, int> *, std::vector<int> *);
+  void walk_flat_connections2d(int, int, std::vector<int> *, std::unordered_set<int> *, std::map<int, int> *);
 
   int modify_param_move(Motion *, int, char **);
 
