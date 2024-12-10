@@ -254,7 +254,7 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
         error->all(FLERR,"Fix surface/global smaxtype < input surf types");
       maxsurftype = smaxtype;
       iarg += 2;
-    } else if (strcmp(arg[iarg],"flat") == 0) {
+    } else if (strcmp(arg[iarg],"flag") == 0) {
       if (iarg+2 > narg) error->all(FLERR,"Illegal fix surface/global command");
       double flat = utils::numeric(FLERR,arg[iarg+1],false,lmp);
       if (flat < 0.0 || flat > 90.0)
@@ -849,7 +849,7 @@ void FixSurfaceGlobal::post_force(int vflag)
   double dr[3],contact[3],ds[3],xc[3],vc[3],omegac[3],*forces,*torquesi;
   double *history,*allhistory,**firsthistory;
 
-  double dot, overlap, max_overlap, *knorm, tmp[3];
+  double dot, overlap, max_overlap, norm, *knorm, tmp[3];
   int it, jjtmp, connection_type, aflag, endpt_flag;
   std::unordered_set<int> *processed_contacts = new std::unordered_set<int>();
   std::map<int, int> *contacts_map = new std::map<int, int>();
@@ -1043,9 +1043,6 @@ void FixSurfaceGlobal::post_force(int vflag)
       processed_contacts->insert(j);
       force_surfs->clear();
       force_surfs->push_back(n);
-      dr[0] = contact_surfs[n].r[0];
-      dr[1] = contact_surfs[n].r[1];
-      dr[2] = contact_surfs[n].r[2];
 
       // Loop through connected surfs
       if (dimension == 2) {
@@ -1121,6 +1118,7 @@ void FixSurfaceGlobal::post_force(int vflag)
       //model->omegaj = omegasurf[j];
 
       if (force_surfs->size() != 1) {
+        norm = 0.0;
         max_overlap = 0.0;
 
         for (k = 0; k < 3; k++) {
@@ -1134,39 +1132,31 @@ void FixSurfaceGlobal::post_force(int vflag)
           m = (*force_surfs)[it];
           overlap = contact_surfs[m].overlap;
           max_overlap = MAX(max_overlap, overlap);
+          norm += overlap * overlap;
 
-          if (it == 0) {
-            // use normal vector from closest point for nearest (first) surf
-            MathExtra::copy3(contact_surfs[m].r, tmp);
-          } else {
-            // use normal vector for non-nearest surfs (extend the surf)
-            MathExtra::copy3(lines[contact_surfs[m].index].norm, tmp);
-            dot = MathExtra::dot3(contact_surfs[m].r, tmp);
-            if (dot < 0.0)
-              MathExtra::negate3(tmp);
-          }
+          MathExtra::copy3(contact_surfs[m].r, tmp);
           MathExtra::norm3(tmp);
           for (k = 0; k < 3; k++) {
             xc[k] += tmp[k] * overlap;
-            // correct omegac, vc
+            vc[k] += vsurf[contact_surfs[m].index][k] * overlap; //TODO: correct
+            omegac[k] += omegasurf[contact_surfs[m].index][k] * overlap;
           }
         }
 
-
-        MathExtra::norm3(xc);
+        norm = 1.0 / norm;
         for (k = 0; k < 3; k++) {
-          xc[k] = x[i][k] - xc[k] * max_overlap;
+          xc[k] = x[i][k] - xc[k] * max_overlap * norm;
+          vc[k] *= norm;
+          omegac[k] *= norm;
         }
-
       } else {
         m = (*force_surfs)[0];
         overlap = contact_surfs[m].overlap;
 
         for (k = 0; k < 3; k++) {
           xc[k] = x[i][k] - contact_surfs[m].r[k];
-          // correct omegac, vc
-          // vc[k] = vsurf[contact_surfs[m].index][k];
-          // omegac[k] = omegasurf[contact_surfs[m].index][k];
+          vc[k] = vsurf[contact_surfs[m].index][k];
+          omegac[k] = omegasurf[contact_surfs[m].index][k];
         }
       }
 
