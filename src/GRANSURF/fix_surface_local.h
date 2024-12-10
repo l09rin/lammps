@@ -49,25 +49,42 @@ class FixSurfaceLocal : public Fix {
     int *aflag_p2;        // ditto for endpt 2
                           //   surf = on normal side of this line
                           //   aflag = FLAT, CONCAVE, CONVEX
-    
-    int ilocal;           // local index of line particle
   };
 
   struct Connect3d {      // tri connectivity
-    int ne1,ne2,ne3;      // # of tris connected to edges 1,2,3 (including self)
-    int nc1,nc2,nc3;      // # of tris connected to corner pts 1,2,3 (including self)
-    tagint *neigh_e1;     // IDs of all tris connected to 1-2 edge (if ne1 > 1)
-    tagint *neigh_e2;     // ditto for 2-3 edge
-    tagint *neigh_e3;     // ditto for 3-1 edge
-    tagint *neigh_c1;     // IDs of all tris connected to corner pt 1 (if nc1 > 1)
-    tagint *neigh_c2;     // ditto for corner pt 2
-    tagint *neigh_c3;     // ditto for corner pt 3
-    
-    int indexe1,indexe2,indexe3;   // pool indices of neigh_e123 chunks
-    int indexc1,indexc2,indexc3;   // pool indices of neigh_c123 chunks
-    int ilocal;           // local index of triangle particle
-  };
 
+                          // counts, not including self
+                          // also not including edge-connected tris for corner pts
+    int ne1,ne2,ne3;      // # of tris connected to edges 1,2,3
+    int nc1,nc2,nc3;      // # of tris connected to corner pts 1,2,3
+
+                          // pairs of edge connections
+    tagint *neigh_e1;     // IDs of tris connected to edge 1
+    tagint *neigh_e2;     // ditto for connections to edge 2
+    tagint *neigh_e3;     // ditto for connections to edge 3
+    int *ewhich_e1;       // which edge (0,1,2) on other tri shares edge 1
+    int *ewhich_e2;       // ditto for edge 2
+    int *ewhich_e3;       // ditto for edge 3
+    int *nside_e1;        // consistency of other tri normal
+    int *nside_e2;        // ditto for edge 2
+    int *nside_e3;        // ditto for edge 3
+                          //   SAME_SIDE = 2 normals are on same side of surf
+                          //   OPPOSITE_SIDE = opposite sides of surf
+    int *aflag_e1;        // is this tri + other tri a FLAT,CONCAVE,CONVEX surf
+    int *aflag_e2;        // ditto for edge 2
+    int *aflag_e3;        // ditto for edge 3
+                          //   surf = on normal side of this tri
+                          //   aflag = FLAT, CONCAVE, CONVEX
+
+                          // pairs of corner pt connections
+    tagint *neigh_c1;     // IDs of tris connected to corner pt 1
+    tagint *neigh_c2;     // ditto for connections to corner pt 2
+    tagint *neigh_c3;     // ditto for connections to corner pt 3
+    int *cwhich_c1;       // which corner pt (0,1,2) on other tri shares corner pt 1
+    int *cwhich_c2;       // ditto for corner pt 2
+    int *cwhich_c3;       // ditto for corner pt 3
+  };
+  
   Connect2d *connect2d;         // 2d connection info
   Connect3d *connect3d;         // 3d connection info
   int nmax_connect;             // allocated size of connect2d/3d
@@ -111,8 +128,12 @@ class FixSurfaceLocal : public Fix {
   };
 
   struct Pool3d {
-    int neigh_e1,neigh_e2,neigh_e3;    // pool indices of neigh_e123 chunks
-    int neigh_c1,neigh_c2,neigh_c3;    // pool indices of neigh_c123 chunks
+    int neigh_e1,neigh_e2,neigh_e3;     // pool indices of neigh_e123 chunks
+    int ewhich_e1,ewhich_e2,ewhich_e3;  // pool indices of neigh_e123 chunks
+    int nside_e1,nside_e2,nside_e3;     // pool indices of neigh_e123 chunks
+    int aflag_e1,aflag_e2,aflag_e3;     // pool indices of neigh_e123 chunks
+    int neigh_c1,neigh_c2,neigh_c3;     // pool indices of neigh_c123 chunks
+    int cwhich_c1,cwhich_c2,cwhich_c3;  // pool indices of neigh_c123 chunks
   };
 
   Pool2d *pool2d;               // pool indices of connect2d vectors
@@ -169,7 +190,7 @@ class FixSurfaceLocal : public Fix {
   Connect2d *connect2dall;    // global connectivity info
   Connect3d *connect3dall;
 
-  int **plist;                // ragged 2d array for global line end pt lists
+  int **plines;               // ragged 2d array for global line end pt lists
   int **elist;                // ragged 2d array for global tri edge lists
   int **clist;                // ragged 2d array for global tri corner pt lists
 
