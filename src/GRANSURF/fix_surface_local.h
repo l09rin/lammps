@@ -149,15 +149,19 @@ class FixSurfaceLocal : public Fix {
   // data structs for calculating global connectivity of line/tri particles
   // only used by Rvous comm during setup
 
-  struct InRvous {
-    int proc, ibin, ilocal, ipoint;
-    tagint atomID;
-    double x[3];
+  struct InRvous {            // datum for each bin of each endpt in each line
+    int proc;                 // owning proc
+    int ibin;                 // bin assignment
+    int ilocal;               // index of line particle
+    int ipoint;               // 0/1 for either endpt
+    tagint atomID;            // ID of line particle
+    double x[3];              // coords of endpt
   };
 
-  struct OutRvous {
-    int ilocal, ipoint;
-    tagint atomID;
+  struct OutRvous {           // datum returned to owning proc
+    int ilocal;               // index of line particle
+    int ipoint;               // 0/1 for either endpt
+    tagint atomID;            // ID of other line particle with matching endpt
   };
 
   double bboxlo[3],bboxhi[3];    // bounding box around all lines/tris
@@ -193,15 +197,6 @@ class FixSurfaceLocal : public Fix {
   int **plines;               // ragged 2d array for global line end pt lists
   int **elist;                // ragged 2d array for global tri edge lists
   int **clist;                // ragged 2d array for global tri corner pt lists
-
-  // data structs for binning end pts of lines or tris from data file
-  // these are for local surfs which procs already own as line or tri style atoms
-  // only used during setup, then deleted
-
-  double **endpts;         // current end pts of lines I own
-                           // Nlocal x 4 array for local atoms
-  double **corners;        // current corner pts of tris I own
-                           // Nlocal x 9 array for local atoms
 
   struct OnePt {               // one end/corner point of iline/itri in a bin
     int iatom;                 // local index of the line/tri in atom list
@@ -240,9 +235,9 @@ class FixSurfaceLocal : public Fix {
 
   void connectivity2d_local();
   void connectivity3d_local();
-  void calculate_endpts();
+  void calculate_endpts(double **);
   int overlap_bins_2d(double *, double, int *);
-  void calculate_corners();
+  void calculate_corners(double **);
   int overlap_bins_3d(double *, double, int *);
 
   int check_exist();

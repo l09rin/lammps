@@ -1130,9 +1130,12 @@ double FixSurfaceLocal::memory_usage()
 
 /* ----------------------------------------------------------------------
    create and initialize Connect2d info for owned lines
+     only np1,np2 and neigh_p1,neigh_p2
+     also atom2connect,connect2atom
    this must be done with INEXACT point matching
-   b/c once datafile is read, lines have only a center point, length, and theta
-   thus same point calculated by 2 lines may be epsilon different
+     done via Rvous algorithm on set of slightly overlapping bins
+   inexact b/c once datafile is read, lines have only a center point, length, and theta
+     thus same point calculated by 2 lines may be epsilon different
 ------------------------------------------------------------------------- */
 
 void FixSurfaceLocal::connectivity2d_local()
@@ -1186,8 +1189,9 @@ void FixSurfaceLocal::connectivity2d_local()
 
   // calculate current endpts of owned lines
 
+  double **endpts;
   memory->create(endpts,nline,4,"surface/local:endpts");
-  calculate_endpts();
+  calculate_endpts(endpts);
 
   // compute min/max extent of my line endpts
   // MPI_Allreduce for bbox of all lines
@@ -1224,7 +1228,7 @@ void FixSurfaceLocal::connectivity2d_local()
   // conceptual binning of bbox by up to NBIN x NBIN bins
   // ensure bin size is not <= 2*EPS so that pt +/- EPS cannot overlap > 4 bins
   // nbin xy = # of bins in each dim
-  // NOTE: total bin count seems too large when small # of surfs
+  // NOTE: total bin count seems too large when small # of surfs - check nbins ?
 
   nbinx = static_cast<int> ((bboxhi[0]-bboxlo[0])/(4.0*eps));
   nbinx = MIN(nbinx,NBIN);
@@ -1242,7 +1246,6 @@ void FixSurfaceLocal::connectivity2d_local()
   // every Pth bin is assigned to each proc
   // use overlap_bins_2d() to find all bins a line endpt overlaps within EPS
   // allows for matching pts in Rvous decomp which are up to EPS apart
-  // NOTE: doc what the set of inbuf datums are, why is it possibly 4x too many
   
   int me = comm->me;
   int nprocs = comm->nprocs;
@@ -1303,85 +1306,109 @@ void FixSurfaceLocal::connectivity2d_local()
   memory->sfree(inbuf);
 
   // loop over received Rvous datums
-  // count # of connections for each point on my lines
-  // this will overcount by potentially 4x due to bins overlapping by EPS
-  // datums do not include self connection
-  
-  int ilocal,iline,np1,np2;
+  // p1/p2_counts = # of connections for each point on my lines
+  // this will overcount (potentially by 4x) due to bins overlapping by EPS
+  // datums do NOT include self connection
+
+  int *p1_counts,*p2_counts;
+  memory->create(p1_counts,nlocal_connect,"surface/local:p1_counts");
+  memory->create(p2_counts,nlocal_connect,"surface/local:p2_counts");
+
+  int ilocal,iline;
 
   for (i = 0; i < nlocal_connect; i++)
-    connect2d[i].np1 = connect2d[i].np2 = 0;
+    p1_counts[i] = p2_counts[i] = 0;
 
   for (i = 0; i < nreturn; i++) {
     ilocal = outbuf[i].ilocal;
     iline = line[ilocal];
-    if (outbuf[i].ipoint == 0) connect2d[iline].np1++;
-    else connect2d[iline].np2++;
+    if (outbuf[i].ipoint == 0) p1_counts[iline]++;
+    else p2_counts[iline]++;
   }
 
-  // NOTE: maybe should allocate ragged array instead of via tcp
-  //       then could just do tcp allocation exactly and copy into it
-                           
-  // allocate neigh_p12 vectors
-  // b/c counts are possibly too large this will overallocate
-  // will reallocate below when know exact size
+  // allocate ragged neigh_p1/p2 vectors using p1/p2_counts
+  // this will overallocate because of bins overlapping by EPS
+  //   will reallocate below when know exact size
 
-  for (i = 0; i < nlocal_connect; i++) {
-    np1 = connect2d[i].np1;
-    if (np1) connect2d[i].neigh_p1 = tcp->get(np1,pool2d[i].neigh_p1);
-    else connect2d[i].neigh_p1 = nullptr;
-    np2 = connect2d[i].np2;
-    if (np2) connect2d[i].neigh_p2 = tcp->get(np1,pool2d[i].neigh_p2);
-    else connect2d[i].neigh_p2 = nullptr;
-  }
+  tagint **neigh_p1,**neigh_p2;
+  memory->create_ragged(neigh_p1,nlocal_connect,p1_counts,"surface/local:neigh_p1");
+  memory->create_ragged(neigh_p2,nlocal_connect,p2_counts,"surface/local:neigh_p2");
 
   // loop over received Rvous datums
-  // use each one to set a neigh_p12 vector value
-  // only add it to neigh_p12 if not already added
-  // self line should not be in Rvous datums
+  // add each atomID to neigh_p1/p2 but only if not already in the list
+  // recalculate exact p1/p2_counts
 
   for (i = 0; i < nlocal_connect; i++)
-    connect2d[i].np1 = connect2d[i].np2 = 0;
+    p1_counts[i] = p2_counts[i] = 0;
 
-  tagint atomID;
   int np;
+  tagint atomID;
   tagint *neigh;
-
+  
   for (i = 0; i < nreturn; i++) {
     ilocal = outbuf[i].ilocal;
     iline = line[ilocal];
     if (outbuf[i].ipoint == 0) {
       atomID = outbuf[i].atomID;
-      np = connect2d[iline].np1;
-      neigh = connect2d[iline].neigh_p1;
+      np = p1_counts[iline];
+      neigh = neigh_p1[iline];
       for (j = 0; j < np; j++)
         if (neigh[j] == atomID) break;
       if (j == np) {
         neigh[np] = atomID;
-        connect2d[iline].np1++;
+        p1_counts[iline]++;
       }
     } else {
       atomID = outbuf[i].atomID;
-      np = connect2d[iline].np2;
-      neigh = connect2d[iline].neigh_p2;
+      np = p2_counts[iline];
+      neigh = neigh_p1[iline];
       for (j = 1; j < np; j++)
         if (neigh[j] == atomID) break;
       if (j == np) {
         neigh[np] = atomID;
-        connect2d[iline].np2++;
+        p2_counts[iline];
       }
     }
   }
   
+  // use exact p1/p2_counts and ragged neigh_p1/p2 to allocate neigh_p1/p2 within Connect2d
+  // also set np1,np2
+
+  for (i = 0; i < nlocal_connect; i++) {
+    connect2d[i].np1 = p1_counts[i];;
+    if (connect2d[i].np1) {
+      connect2d[i].neigh_p1 = tcp->get(connect2d[i].np1,pool2d[i].neigh_p1);
+      for (j = 0; j < connect2d[i].np1; j++)
+        connect2d[i].neigh_p1[j] = neigh_p1[i][j];
+    } else connect2d[i].neigh_p1 = nullptr;
+    
+    connect2d[i].np2 = p2_counts[i];;
+    if (connect2d[i].np2) {
+      connect2d[i].neigh_p2 = tcp->get(connect2d[i].np2,pool2d[i].neigh_p2);
+      for (j = 0; j < connect2d[i].np2; j++)
+        connect2d[i].neigh_p2[j] = neigh_p2[i][j];
+    } else connect2d[i].neigh_p2 = nullptr;
+  }
+
+  // clean up
+  
   memory->sfree(outbuf);
+  memory->destroy(p1_counts);
+  memory->destroy(p2_counts);
+  memory->destroy(neigh_p1);
+  memory->destroy(neigh_p2);
 }
 
 /* ----------------------------------------------------------------------
-   create and initialize Connect3d info for all owned tris
+   create and initialize Connect3d info for owned tris
+     only ne1,ne2,ne3 and neigh_e1,neigh_e2,neigh_e3
+     only nc1,nc2,nc3 and neigh_c1,neigh_c2,neigh_c3
+     also atom2connect,connect2atom
    this must be done with INEXACT point matching
-   b/c once datafile is read, tris have a center point, quaternion,
+     done via Rvous algorithm on set of slightly overlapping bins
+   inexact b/c once datafile is read, tris have a center point, quaternion,
      and body-frame corner point displacements
-   thus same point calculated by 2 tris may be epsilon different
+     thus same point calculated by 2 tris may be epsilon different
 ------------------------------------------------------------------------- */
 
 void FixSurfaceLocal::connectivity3d_local()
@@ -1409,10 +1436,16 @@ void FixSurfaceLocal::connectivity3d_local()
   epssq = eps*eps;
 
   // count owned triangles
+  // error check for no tris on any proc
 
   int ntri = 0;
   for (i = 0; i < nlocal; i++)
     if (tri[i] >= 0) ntri++;
+
+  int anytri;
+  MPI_Allreduce(&ntri,&anytri,1,MPI_INT,MPI_MAX,world);
+
+  if (!anytri) error->all(FLERR,"Fix surface/local NULL requires tri particles exist");
 
   // allocate connection info for owned triangles
   // initialize atom2connect for both particles and triangles
@@ -1428,12 +1461,13 @@ void FixSurfaceLocal::connectivity3d_local()
     connect2atom[j] = i;
   }
 
-  // calculate current endpts of owned lines
+  // calculate current corners of owned tris
 
+  double **corners;
   memory->create(corners,ntri,9,"surface/local:corners");
-  calculate_corners();
+  calculate_corners(corners);
 
-  // compute min/max extent of my line endpts
+  // compute min/max extent of my tri corners
   // MPI_Allreduce for bbox of all lines
 
   double mylo[3],myhi[3];
@@ -1465,19 +1499,19 @@ void FixSurfaceLocal::connectivity3d_local()
 
   if (bboxlo[0] == BIG) return;
 
-  // add 2*EPS to all 4 edges of bbox
+  // add 2*EPS to all 4 faces of bbox
 
   bboxlo[0] -= 2.0*eps;
   bboxlo[1] -= 2.0*eps;
   bboxlo[2] -= 2.0*eps;
   bboxhi[0] += 2.0*eps;
   bboxhi[1] += 2.0*eps;
-  bboxhi[1] += 2.0*eps;
+  bboxhi[2] += 2.0*eps;
 
   // conceptual binning of bbox by up to NBIN x NBIN x NBIN bins
   // ensure bin size is not <= 2*EPS so that pt +/- EPS cannot overlap > 8 bins
   // nbin xyz = # of bins in each dim
-  // NOTE: total bin count seems too large when small # of surfs
+  // NOTE: total bin count seems too large when small # of surfs - check nbins ?
 
   nbinx = static_cast<int> ((bboxhi[0]-bboxlo[0])/(4.0*eps));
   nbinx = MIN(nbinx,NBIN);
@@ -1489,7 +1523,7 @@ void FixSurfaceLocal::connectivity3d_local()
   nbinz = MIN(nbinz,NBIN);
   nbinz = MAX(nbinz,1);
 
-  nbins = nbinx * nbiny;
+  nbins = nbinx * nbiny * nbinz;
 
   invbinx = nbinx / (bboxhi[0] - bboxlo[0]);
   invbiny = nbiny / (bboxhi[1] - bboxlo[1]);
@@ -1517,7 +1551,7 @@ void FixSurfaceLocal::connectivity3d_local()
     if (tri[i] < 0) continue;
 
     for (int ipoint = 0; ipoint < 3; ipoint++) {
-      n = overlap_bins_2d(&corners[m][3*ipoint],eps,indices);
+      n = overlap_bins_3d(&corners[m][3*ipoint],eps,indices);
 
       if (ncount+n > maxcount) {
         maxcount += DELTA_RVOUS;
@@ -1559,118 +1593,109 @@ void FixSurfaceLocal::connectivity3d_local()
   memory->sfree(inbuf);
 
   // loop over received Rvous datums
-  // count # of connections for each point on my triangles
-  // datums do not include self connection, so count it as well
+  // n1/n2/n3_counts = # of connections for each conner point on my tris
+  // this will overcount (potentially by 8x) due to bins overlapping by EPS
+  // datums do NOT include self connection
 
-  int ilocal,itri,nc1,nc2,nc3;
+  int *n1_counts,*n2_counts,*n3_counts;
+  memory->create(n1_counts,nlocal_connect,"surface/local:n1_counts");
+  memory->create(n2_counts,nlocal_connect,"surface/local:n2_counts");
+  memory->create(n3_counts,nlocal_connect,"surface/local:n3_counts");
+
+  int ilocal,itri;
 
   for (i = 0; i < nlocal_connect; i++)
-    connect3d[i].nc1 = connect3d[i].nc2 = connect3d[i].nc3 = 1;
+    n1_counts[i] = n2_counts[i] = n3_counts[i] = 0;
 
   for (i = 0; i < nreturn; i++) {
     ilocal = outbuf[i].ilocal;
     itri = tri[ilocal];
-    if (outbuf[i].ipoint == 0) connect3d[itri].nc1++;
-    else if (outbuf[i].ipoint == 1) connect3d[itri].nc2++;
-    else connect3d[itri].nc3++;
+    if (outbuf[i].ipoint == 0) n1_counts[i]++;
+    else if (outbuf[i].ipoint == 1) n2_counts[i]++;
+    else n3_counts[i]++;
   }
+  
+  // allocate ragged neigh_n123 vectors using n1/n2/n3_counts
+  // this will overallocate because of bins overlapping by EPS
+  //   will reallocate below when know exact size of edge and corner neighs
 
-  // allocate neigh_c123 vectors
-  // set 1st value of neigh vector to ID of self tri
-
-  for (i = 0; i < nlocal_connect; i++) {
-    nc1 = connect3d[i].nc1;
-    if (nc1) {
-      connect3d[i].neigh_c1 = tcp->get(nc1,pool3d[i].neigh_c1);
-      connect3d[i].neigh_c1[0] = tag[connect2atom[i]];
-    } else connect3d[i].neigh_c1 = nullptr;
-
-    nc2 = connect3d[i].nc2;
-    if (nc2) {
-      connect3d[i].neigh_c2 = tcp->get(nc2,pool3d[i].neigh_c2);
-      connect3d[i].neigh_c2[0] = tag[connect2atom[i]];
-    } else connect3d[i].neigh_c2 = nullptr;
-
-    nc3 = connect3d[i].nc3;
-    if (nc3) {
-      connect3d[i].neigh_c3 = tcp->get(nc3,pool3d[i].neigh_c3);
-      connect3d[i].neigh_c3[0] = tag[connect2atom[i]];
-    } else connect3d[i].neigh_c3 = nullptr;
-  }
+  tagint **neigh_n1,**neigh_n2,**neigh_n3;
+  memory->create_ragged(neigh_n1,nlocal_connect,n1_counts,"surface/local:neigh_n1");
+  memory->create_ragged(neigh_n2,nlocal_connect,n2_counts,"surface/local:neigh_n2");
+  memory->create_ragged(neigh_n3,nlocal_connect,n3_counts,"surface/local:neigh_n3");
 
   // loop over received Rvous datums
-  // use each one to set a neigh_c123 vector value
-  // only add it to neigh_c123 if not already added
-  //   b/c point pairs within EPS of bin boundaries may be recvd up to 8x
+  // add each atomID to neigh_n1/n2/n3 but only if not already in the list
+  // recalculate exact n1/n2/n3_counts
 
   for (i = 0; i < nlocal_connect; i++)
-    connect3d[i].nc1 = connect3d[i].nc2 = connect3d[i].nc3 = 1;
+    n1_counts[i] = n2_counts[i] = n3_counts[i] = 0;
 
+  int np;
   tagint atomID;
-  int nc;
   tagint *neigh;
-
+  
   for (i = 0; i < nreturn; i++) {
     ilocal = outbuf[i].ilocal;
     itri = tri[ilocal];
     if (outbuf[i].ipoint == 0) {
       atomID = outbuf[i].atomID;
-      nc = connect3d[itri].nc1;
-      neigh = connect3d[itri].neigh_c1;
-      for (j = 1; j < nc; j++)
+      np = n1_counts[itri];
+      neigh = neigh_n1[itri];
+      for (j = 0; j < np; j++)
         if (neigh[j] == atomID) break;
-      if (j == nc) {
-        neigh[nc] = atomID;
-        connect3d[itri].nc1++;
+      if (j == np) {
+        neigh[np] = atomID;
+        n1_counts[itri]++;
       }
     } else if (outbuf[i].ipoint == 1) {
       atomID = outbuf[i].atomID;
-      nc = connect3d[itri].nc2;
-      neigh = connect3d[itri].neigh_c2;
-      for (j = 1; j < nc; j++)
+      np = n2_counts[itri];
+      neigh = neigh_n2[itri];
+      for (j = 0; j < np; j++)
         if (neigh[j] == atomID) break;
-      if (j == nc) {
-        neigh[nc] = atomID;
-        connect3d[itri].nc2++;
+      if (j == np) {
+        neigh[np] = atomID;
+        n2_counts[itri]++;
       }
-    } else {
+    } else if (outbuf[i].ipoint == 2) {
       atomID = outbuf[i].atomID;
-      nc = connect3d[itri].nc3;
-      neigh = connect3d[itri].neigh_c3;
-      for (j = 1; j < nc; j++)
+      np = n3_counts[itri];
+      neigh = neigh_n3[itri];
+      for (j = 0; j < np; j++)
         if (neigh[j] == atomID) break;
-      if (j == nc) {
-        neigh[nc] = atomID;
-        connect3d[itri].nc3++;
+      if (j == np) {
+        neigh[np] = atomID;
+        n3_counts[itri]++;
       }
     }
   }
 
   memory->sfree(outbuf);
 
-  // NOTE: could now go thru and return all chunks and realloc to correct size ?
-  //       maxchunk for tcp would need to be 4x larger than actual ?
-
-  // use corner point connectivity to infer edge connectivity
-  // a common edge between 2 tris exists if both of the edge corner pts
-  //   in triangle I have the same triangle J in their corner connectivity list
-
-  // tally counts for each of 3 edges in each tri
-  // edge between corner points 1-2, points 2-3, points 3-1
-
+  // now have exact list of all neighbor tris of each corner point
+  // each neighbor is either an edge neighbor or corner neighbor
+  // edge neighbor = appears in neigh lists of 2 adjacent corners
+  // corner neighbor = appears only in neigh list of a single corner
+  
   int n1,n2;
   tagint *neigh1,*neigh2;
 
-  for (i = 0; i < nlocal_connect; i++)
-    connect3d[i].ne1 = connect3d[i].ne2 = connect3d[i].ne3 = 1;
-
   for (i = 0; i < nlocal_connect; i++) {
-    n1 = connect3d[i].nc1;
-    n2 = connect3d[i].nc2;
-    neigh1 = connect3d[i].neigh_c1;
-    neigh2 = connect3d[i].neigh_c2;
-    for (j = 1; j < n1; j++) {
-      for (k = 1; k < n2; k++) {
+    connect3d[i].ne1 = connect3d[i].ne2 = connect3d[i].ne3 = 0;
+    connect3d[i].nc1 = connect3d[i].nc2 = connect3d[i].nc3 = 0;
+  }
+  
+  for (i = 0; i < nlocal_connect; i++) {
+
+    // count edge neighbors first
+
+    n1 = n1_counts[i];
+    n2 = n2_counts[i];
+    neigh1 = neigh_n1[i];
+    neigh2 = neigh_n2[i];
+    for (j = 0; j < n1; j++) {
+      for (k = 0; k < n2; k++) {
         if (neigh2[k] == neigh1[j]) {
           connect3d[i].ne1++;
           break;
@@ -1678,12 +1703,12 @@ void FixSurfaceLocal::connectivity3d_local()
       }
     }
 
-    n1 = connect3d[i].nc2;
-    n2 = connect3d[i].nc3;
-    neigh1 = connect3d[i].neigh_c2;
-    neigh2 = connect3d[i].neigh_c3;
-    for (j = 1; j < n1; j++) {
-      for (k = 1; k < n2; k++) {
+    n1 = n2_counts[i];
+    n2 = n3_counts[i];
+    neigh1 = neigh_n2[i];
+    neigh2 = neigh_n3[i];
+    for (j = 0; j < n1; j++) {
+      for (k = 0; k < n2; k++) {
         if (neigh2[k] == neigh1[j]) {
           connect3d[i].ne2++;
           break;
@@ -1691,59 +1716,63 @@ void FixSurfaceLocal::connectivity3d_local()
       }
     }
 
-    n1 = connect3d[i].nc3;
-    n2 = connect3d[i].nc1;
-    neigh1 = connect3d[i].neigh_c3;
-    neigh2 = connect3d[i].neigh_c1;
-    for (j = 1; j < n1; j++) {
-      for (k = 1; k < n2; k++) {
+    n1 = n3_counts[i];
+    n2 = n1_counts[i];
+    neigh1 = neigh_n3[i];
+    neigh2 = neigh_n1[i];
+    for (j = 0; j < n1; j++) {
+      for (k = 0; k < n2; k++) {
         if (neigh2[k] == neigh1[j]) {
           connect3d[i].ne3++;
           break;
         }
       }
     }
+
+    // corner neighbor count = all neighbors minus 2 sets of edge neighbors
+
+    connect3d[i].nc1 = n1_counts[i] - connect3d[i].ne1 - connect3d[i].ne3;
+    connect3d[i].nc2 = n2_counts[i] - connect3d[i].ne2 - connect3d[i].ne1;
+    connect3d[i].nc3 = n3_counts[i] - connect3d[i].ne3 - connect3d[i].ne2;
   }
 
-  // allocate neigh_e123 vectors
-  // set 1st value of neigh vector to ID of self tri
-  // no over-allocation here since corner point connections have no duplications
-
-  int ne1,ne2,ne3;
+  // allocate neigh_e123 and neigh_c123 vectors within Connect3d
+  // these are now exactly the correct length
 
   for (i = 0; i < nlocal_connect; i++) {
-    ne1 = connect3d[i].ne1;
-    if (ne1) {
-      connect3d[i].neigh_e1 = tcp->get(ne1,pool3d[i].neigh_e1);
-      connect3d[i].neigh_e1[0] = tag[connect2atom[i]];
+    if (connect3d[i].ne1) {
+      connect3d[i].neigh_e1 = tcp->get(connect3d[i].ne1,pool3d[i].neigh_e1);
     } else connect3d[i].neigh_e1 = nullptr;
-
-    ne2 = connect3d[i].ne2;
-    if (ne2) {
-      connect3d[i].neigh_e2 = tcp->get(ne2,pool3d[i].neigh_e2);
-      connect3d[i].neigh_e2[0] = tag[connect2atom[i]];
+    if (connect3d[i].ne2) {
+      connect3d[i].neigh_e2 = tcp->get(connect3d[i].ne2,pool3d[i].neigh_e2);
     } else connect3d[i].neigh_e2 = nullptr;
-
-    ne3 = connect3d[i].ne3;
-    if (ne3) {
-      connect3d[i].neigh_e3 = tcp->get(ne3,pool3d[i].neigh_e3);
-      connect3d[i].neigh_e3[0] = tag[connect2atom[i]];
+    if (connect3d[i].ne3) {
+      connect3d[i].neigh_e3 = tcp->get(connect3d[i].ne3,pool3d[i].neigh_e3);
     } else connect3d[i].neigh_e3 = nullptr;
+
+    if (connect3d[i].nc1) {
+      connect3d[i].neigh_c1 = tcp->get(connect3d[i].nc1,pool3d[i].neigh_c1);
+    } else connect3d[i].neigh_c1 = nullptr;
+    if (connect3d[i].nc2) {
+      connect3d[i].neigh_c2 = tcp->get(connect3d[i].nc2,pool3d[i].neigh_c2);
+    } else connect3d[i].neigh_c2 = nullptr;
+    if (connect3d[i].nc3) {
+      connect3d[i].neigh_c3 = tcp->get(connect3d[i].nc3,pool3d[i].neigh_c3);
+    } else connect3d[i].neigh_c3 = nullptr;
   }
 
-  // set the neigh_e123 vector values
-  // edge between corner points 1-2, points 2-3, points 3-1
+  // populate neigh_e123 vectors within Connect3d
 
   for (i = 0; i < nlocal_connect; i++)
-    connect3d[i].ne1 = connect3d[i].ne2 = connect3d[i].ne3 = 1;
-
+    connect3d[i].ne1 = connect3d[i].ne2 = connect3d[i].ne3 = 0;
+  
   for (i = 0; i < nlocal_connect; i++) {
-    n1 = connect3d[i].nc1;
-    n2 = connect3d[i].nc2;
-    neigh1 = connect3d[i].neigh_c1;
-    neigh2 = connect3d[i].neigh_c2;
-    for (j = 1; j < n1; j++) {
-      for (k = 1; k < n2; k++) {
+    n1 = n1_counts[i];
+    n2 = n2_counts[i];
+    neigh1 = neigh_n1[i];
+    neigh2 = neigh_n2[i];
+    for (j = 0; j < n1; j++) {
+      for (k = 0; k < n2; k++) {
         if (neigh2[k] == neigh1[j]) {
           connect3d[i].neigh_e1[connect3d[i].ne1++] = neigh1[j];
           break;
@@ -1751,12 +1780,12 @@ void FixSurfaceLocal::connectivity3d_local()
       }
     }
 
-    n1 = connect3d[i].nc2;
-    n2 = connect3d[i].nc3;
-    neigh1 = connect3d[i].neigh_c2;
-    neigh2 = connect3d[i].neigh_c3;
-    for (j = 1; j < n1; j++) {
-      for (k = 1; k < n2; k++) {
+    n1 = n2_counts[i];
+    n2 = n3_counts[i];
+    neigh1 = neigh_n2[i];
+    neigh2 = neigh_n3[i];
+    for (j = 0; j < n1; j++) {
+      for (k = 0; k < n2; k++) {
         if (neigh2[k] == neigh1[j]) {
           connect3d[i].neigh_e2[connect3d[i].ne2++] = neigh1[j];
           break;
@@ -1764,12 +1793,12 @@ void FixSurfaceLocal::connectivity3d_local()
       }
     }
 
-    n1 = connect3d[i].nc3;
-    n2 = connect3d[i].nc1;
-    neigh1 = connect3d[i].neigh_c3;
-    neigh2 = connect3d[i].neigh_c1;
-    for (j = 1; j < n1; j++) {
-      for (k = 1; k < n2; k++) {
+    n1 = n3_counts[i];
+    n2 = n1_counts[i];
+    neigh1 = neigh_n3[i];
+    neigh2 = neigh_n1[i];
+    for (j = 0; j < n1; j++) {
+      for (k = 0; k < n2; k++) {
         if (neigh2[k] == neigh1[j]) {
           connect3d[i].neigh_e3[connect3d[i].ne3++] = neigh1[j];
           break;
@@ -1777,10 +1806,86 @@ void FixSurfaceLocal::connectivity3d_local()
       }
     }
   }
+
+  // populate neigh_c123 vectors within Connect3d
+
+  for (i = 0; i < nlocal_connect; i++)
+    connect3d[i].nc1 = connect3d[i].nc2 = connect3d[i].nc3 = 0;
+
+  int flag;
+  
+  for (i = 0; i < nlocal_connect; i++) {
+    n = n1_counts[i];
+    neigh = neigh_n1[i];
+    for (j = 0; j < n; j++) {
+      flag = 0;
+      for (k = 0; k < connect3d[i].ne1; k++) {
+        if (neigh[j] == connect3d[i].neigh_e1[k]) {
+          flag = 1;
+          break;
+        }
+      }
+      for (k = 0; k < connect3d[i].ne3; k++) {
+        if (neigh[j] == connect3d[i].neigh_e3[k]) {
+          flag = 1;
+          break;
+        }
+      }
+      if (!flag) connect3d[i].neigh_c1[connect3d[i].nc1++] = neigh[j];
+    }
+
+    n = n2_counts[i];
+    neigh = neigh_n2[i];
+    for (j = 0; j < n; j++) {
+      flag = 0;
+      for (k = 0; k < connect3d[i].ne2; k++) {
+        if (neigh[j] == connect3d[i].neigh_e2[k]) {
+          flag = 1;
+          break;
+        }
+      }
+      for (k = 0; k < connect3d[i].ne1; k++) {
+        if (neigh[j] == connect3d[i].neigh_e1[k]) {
+          flag = 1;
+          break;
+        }
+      }
+      if (!flag) connect3d[i].neigh_c2[connect3d[i].nc2++] = neigh[j];
+    }
+
+    n = n3_counts[i];
+    neigh = neigh_n3[i];
+    for (j = 0; j < n; j++) {
+      flag = 0;
+      for (k = 0; k < connect3d[i].ne3; k++) {
+        if (neigh[j] == connect3d[i].neigh_e3[k]) {
+          flag = 1;
+          break;
+        }
+      }
+      for (k = 0; k < connect3d[i].ne2; k++) {
+        if (neigh[j] == connect3d[i].neigh_e2[k]) {
+          flag = 1;
+          break;
+        }
+      }
+      if (!flag) connect3d[i].neigh_c3[connect3d[i].nc3++] = neigh[j];
+    }
+  }
+
+  // clean up
+  
+  memory->destroy(n1_counts);
+  memory->destroy(n2_counts);
+  memory->destroy(n3_counts);
+  memory->destroy(neigh_n1);
+  memory->destroy(neigh_n2);
+  memory->destroy(neigh_n3);
 }
 
 /* ----------------------------------------------------------------------
    callback from comm->rvous() for 2d or 3d
+   operates in Rvous decomposition of bins
 ------------------------------------------------------------------------- */
 
 int FixSurfaceLocal::point_match(int n, char *inbuf,
@@ -1831,7 +1936,7 @@ int FixSurfaceLocal::point_match(int n, char *inbuf,
 
   // double loop over datums in each bin to to identify point matches
   // match = 2 points within EPS distance of each other
-  // add each match to outbuf
+  // add each match to outbuf, to send atomID of other particle which matches
 
   proclist = nullptr;
   OutRvous *out = nullptr;
@@ -1887,7 +1992,7 @@ int FixSurfaceLocal::point_match(int n, char *inbuf,
    compute current end points of my owned lines
 ------------------------------------------------------------------------- */
 
-void FixSurfaceLocal::calculate_endpts()
+void FixSurfaceLocal::calculate_endpts(double **endpts)
 {
   double length,theta,dx,dy;
 
@@ -1946,7 +2051,7 @@ int FixSurfaceLocal::overlap_bins_2d(double *pt, double eps, int *indices)
    compute current corner points of my owned triangles
 ------------------------------------------------------------------------- */
 
-void FixSurfaceLocal::calculate_corners()
+void FixSurfaceLocal::calculate_corners(double **corners)
 {
   int ibonus;
   double p[3][3];
