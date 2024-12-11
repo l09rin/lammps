@@ -223,8 +223,8 @@ class FixSurfaceLocal : public Fix {
   int vecflag;            // 0/1 whether tri matching should also
                           // store variable-length vecs of corner connections
 
-  // static variable for ring communication callback to access class data
-  // callback functions for ring communication
+  // static variable for Rvous communication callback to access class data
+  // callback functions for Rvous communication
 
   static FixSurfaceLocal *fptr;
   static void linematch(int, char *);
@@ -233,12 +233,16 @@ class FixSurfaceLocal : public Fix {
 
   // private methods
 
+  // local connectivity build from line or triangle particles
+
   void connectivity2d_local();
   void connectivity3d_local();
   void calculate_endpts(double **);
   int overlap_bins_2d(double *, double, int *);
   void calculate_corners(double **);
   int overlap_bins_3d(double *, double, int *);
+  
+  // global connectivity build from molecule or STL files
 
   int check_exist();
   void extract_from_molecules(char *);
@@ -247,6 +251,11 @@ class FixSurfaceLocal : public Fix {
   void connectivity3d_global();
   void assign2d();
   void assign3d();
+
+  // final stages of connectivity build for both local and global cases
+
+  void connectivity2d_final();
+  void connectivity3d_final();
 };
 
 }

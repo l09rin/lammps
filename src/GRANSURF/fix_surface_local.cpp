@@ -30,20 +30,32 @@ using namespace LAMMPS_NS;
 using namespace FixConst;
 
 // NOTE: change defines to static const in both files
-// NOTE: need to populate rest of Connect2d vectors
+// NOTE: add input keyword option for multiple mol/STL files, like FSG
+// NOTE: need to populate rest of Connect2d vectors in connectivity2d/3d_final()
 // NOTE: epsilon should be defined as fraction of max surf size ?
-// NOTE: one allocater for ints, one for tagints ?
+// NOTE: need one allocater for ints, one for tagints ?
 // NOTE: what if lines/tris already exist (from data file)
 //       when read more from STL or molecule file ?
+// NOTE: comm of ghost lines/tris needed before final connectivity can be done
+//       then re-comm of connectivity after it is done
+// NOTE: how to set and limit MAXTRIPOINT for allocators, no overallocation now
+// NOTE: set exact size for comm_border, after Connect23/3d is built
+// NOTE: print out stats on connections, same as fix surf/global
+// NOTE: need more tallying in memory_usage()
+// NOTE: total bin count for Rvous seems too large when small # of surfs - check nbins ?
+// NOTE: make DELTA values bigger when done testing
+// NOTE: num in point_match() is just for debugging, can remove it
+// NOTE: call to domain->remap() in assign2d/3d() will wrap new line/tri particles by PBC
+//       is that what we want ?   not the case for fix surf/global lines/tris
 
 #define EPSILON 0.001
 #define NBIN 100
 #define BIG 1.0e20
 #define MAXLINE 256
-#define MAXTRIPOINT 24      // NOTE: what should these 2 max line/tri values be
+#define MAXTRIPOINT 24
 
 #define DELTA 128
-#define DELTA_CONNECT 4     // NOTE: make it larger when done testing
+#define DELTA_CONNECT 4     // make it larger when done testing
 #define DELTA_RVOUS 8       // must be >= 8, make it bigger when done testing
 
 static constexpr int RVOUS = 1;   // 0 for irregular, 1 for all2all
@@ -77,11 +89,6 @@ FixSurfaceLocal::FixSurfaceLocal(LAMMPS *lmp, int narg, char **arg) :
   pool2d = nullptr;
   pool3d = nullptr;
   connect2atom = nullptr;
-  
-  // NOTE: is this an optimal way to initialize MyPoolChunk?
-  //       how to set and limit MAXTRIPOINT ?
-  // NOTE: need 2 of these for tagint and int
-  // NOTE: check if allocs from 2 pools are optimal
   
   tcp = new MyPoolChunk<tagint>(1,MAXTRIPOINT,6);
 
@@ -262,28 +269,11 @@ void FixSurfaceLocal::post_constructor()
   }
 
   // set max size for comm of connection info
-  // NOTE: set 2d/3d based on # max of endpt/corner connections (not 12) ??
-  //       possibly use MAXTRIPOINT ?
-  // NOTE: can now set this to precise value
 
   if (dimension == 2) comm_border = 4 + 2*12;
   else comm_border = 8 + 6*12;
 
   // output total of point matching stats
-  // NOTE: still need to implement this
-
-  /*
-  bigint nmatch_me = nreturn;
-  bigint nmatch;
-  MPI_Allreduce(&nmatch_me,&nmatch,1,MPI_LMP_BIGINT,MPI_SUM,world);
-
-  if (comm->me == 0) {
-    if (screen)
-      fprintf(screen,"  matched %g line end point pairs\n",0.5*nmatch);
-    if (logfile)
-      fprintf(logfile,"  matched %g line end point pairs\n",0.5*nmatch);
-  }
-  */
 }
 
 /* ----------------------------------------------------------------------
@@ -299,6 +289,13 @@ void FixSurfaceLocal::grow_arrays(int nmax)
 
 void FixSurfaceLocal::setup_pre_neighbor()
 {
+  // fill in remaining fields in Connect2d or Connect3d
+  // NOTE: only do this one time, via firstflag
+  // NOTE: at this point, should have ghost lines/tris and their Connect info
+  
+  if (dimension == 2) connectivity2d_final();
+  else connectivity3d_final();
+
   pre_neighbor();
 }
 
@@ -1101,7 +1098,6 @@ int FixSurfaceLocal::unpack_exchange(int nlocal, double *buf)
 
 /* ----------------------------------------------------------------------
    memory usage of local atom-based array
-   NOTE: need to also tally pages in tcp
 ------------------------------------------------------------------------- */
 
 double FixSurfaceLocal::memory_usage()
@@ -1228,7 +1224,6 @@ void FixSurfaceLocal::connectivity2d_local()
   // conceptual binning of bbox by up to NBIN x NBIN bins
   // ensure bin size is not <= 2*EPS so that pt +/- EPS cannot overlap > 4 bins
   // nbin xy = # of bins in each dim
-  // NOTE: total bin count seems too large when small # of surfs - check nbins ?
 
   nbinx = static_cast<int> ((bboxhi[0]-bboxlo[0])/(4.0*eps));
   nbinx = MIN(nbinx,NBIN);
@@ -1494,11 +1489,6 @@ void FixSurfaceLocal::connectivity3d_local()
   MPI_Allreduce(mylo,bboxlo,3,MPI_DOUBLE,MPI_MIN,world);
   MPI_Allreduce(myhi,bboxhi,3,MPI_DOUBLE,MPI_MAX,world);
 
-  // if no tris on any proc, just exit
-  // NOTE: should this be an error ?
-
-  if (bboxlo[0] == BIG) return;
-
   // add 2*EPS to all 4 faces of bbox
 
   bboxlo[0] -= 2.0*eps;
@@ -1511,7 +1501,6 @@ void FixSurfaceLocal::connectivity3d_local()
   // conceptual binning of bbox by up to NBIN x NBIN x NBIN bins
   // ensure bin size is not <= 2*EPS so that pt +/- EPS cannot overlap > 8 bins
   // nbin xyz = # of bins in each dim
-  // NOTE: total bin count seems too large when small # of surfs - check nbins ?
 
   nbinx = static_cast<int> ((bboxhi[0]-bboxlo[0])/(4.0*eps));
   nbinx = MIN(nbinx,NBIN);
@@ -1910,8 +1899,6 @@ int FixSurfaceLocal::point_match(int n, char *inbuf,
 
   int nmine = nbins / nprocs;
   if (me < nbins % nprocs) nmine++;
-
-  // NOTE: num is just for debugging
 
   int *num,*first,*next;
   memory->create(num,nmine,"surface/local:num");
@@ -2437,7 +2424,6 @@ void FixSurfaceLocal::connectivity2d_global()
 
   // allocate all ragged arrays which connect2dall will point to
 
-  // NOTE: this should not be allocated here ?
   int **neigh_p1,**neigh_p2;
   memory->create_ragged(neigh_p1,nlines,p1_counts,"surface/local:neigh_p1");
   memory->create_ragged(neigh_p2,nlines,p2_counts,"surface/local:neigh_p2");
@@ -2753,8 +2739,6 @@ void FixSurfaceLocal::assign2d()
     imagedata = ((imageint) IMGMAX << IMG2BITS) |
       ((imageint) IMGMAX << IMGBITS) | IMGMAX;
 
-    // NOTE: this will wrap line center back into periodic box
-
     domain->remap(xmid,imagedata);
     if (triclinic) {
       domain->x2lamda(xmid,lamda);
@@ -2828,7 +2812,6 @@ void FixSurfaceLocal::assign2d()
   }
 
   memory->sfree(connect2dall);
-  // NOTE: does this need internal freeing?
 
   // recreate atom map that includes added lines
 
@@ -2945,8 +2928,6 @@ void FixSurfaceLocal::assign3d()
 
     imagedata = ((imageint) IMGMAX << IMG2BITS) |
       ((imageint) IMGMAX << IMGBITS) | IMGMAX;
-
-    // NOTE: this will wrap triangle center back into periodic box
 
     domain->remap(xmid,imagedata);
     if (triclinic) {
@@ -3075,4 +3056,30 @@ void FixSurfaceLocal::assign3d()
     atom->map_init();
     atom->map_set();
   }
+}
+
+// ----------------------------------------------------------------------
+// ----------------------------------------------------------------------
+// methods for final stages of surf connectivity build, for global or local
+// ----------------------------------------------------------------------
+// ----------------------------------------------------------------------
+
+/* ----------------------------------------------------------------------
+   assign values to all other fields in Connect2d for line connections
+   only np1,np2 and neigh_p1/p2 were previously assigned
+------------------------------------------------------------------------- */
+
+void FixSurfaceLocal::connectivity2d_final()
+{
+  
+}
+
+/* ----------------------------------------------------------------------
+   assign values to all other fields in Connec3d for tri connections
+   only ne1,ne2,ne3 and neigh_e1/e2/e3 were previously assigned
+   only nc1,nc2,nc3 and neigh_c1/c2/c3 were previously assigned
+------------------------------------------------------------------------- */
+
+void FixSurfaceLocal::connectivity3d_final()
+{
 }
