@@ -2227,7 +2227,7 @@ void FixSurfaceGlobal::connectivity2d()
     plines[lines[i].p2][counts[lines[i].p2]++] = i;
   }
 
-  // p1/p2_counts = # of lines connecting to endpoints p1/p2 of each line
+  // p12_counts = # of lines connecting to endpoints p12 of each line
   // do NOT include self
 
   int *p1_counts,*p2_counts;
@@ -2479,7 +2479,7 @@ void FixSurfaceGlobal::connectivity3d()
     etris[tri2edge[i][2]][counts[tri2edge[i][2]]++] = i;
   }
 
-  // e1/e2/e3_counts = # of edges connecting to edges e1/e2/e3 of each tri
+  // e123_counts = # of edges connecting to edges e123 of each tri
   // do NOT include self
 
   int *e1_counts,*e2_counts,*e3_counts;
@@ -2764,7 +2764,7 @@ void FixSurfaceGlobal::connectivity3d()
     ctris[tris[i].p3][counts[tris[i].p3]++] = i;
   }
 
-  // c1/c2/c3_counts = # of tris connecting to corner points c1/c2/c3 of each tri
+  // c123_counts = # of tris connecting to corner points c123 of each tri
   // do NOT include self or tris which connect to an edge
   // only include tris which only connect at the corner point
 
@@ -2795,30 +2795,30 @@ void FixSurfaceGlobal::connectivity3d()
 
   for (int i = 0; i < ntris; i++) {
     connect3d[i].nc1 = c1_counts[i];
-    if (connect3d[i].nc1 == 0) {
-      connect3d[i].neigh_c1 = nullptr;
-      connect3d[i].cwhich_c1 = nullptr;
-    } else {
+    if (connect3d[i].nc1) {
       connect3d[i].neigh_c1 = neigh_c1[i];
       connect3d[i].cwhich_c1 = cwhich_c1[i];
+    } else {
+      connect3d[i].neigh_c1 = nullptr;
+      connect3d[i].cwhich_c1 = nullptr;
     }
 
     connect3d[i].nc2 = c2_counts[i];
-    if (connect3d[i].nc2 == 0) {
-      connect3d[i].neigh_c2 = nullptr;
-      connect3d[i].cwhich_c2 = nullptr;
-    } else {
+    if (connect3d[i].nc2) {
       connect3d[i].neigh_c2 = neigh_c2[i];
       connect3d[i].cwhich_c2 = cwhich_c2[i];
+    } else {
+      connect3d[i].neigh_c2 = nullptr;
+      connect3d[i].cwhich_c2 = nullptr;
     }
 
     connect3d[i].nc3 = c3_counts[i];
-    if (connect3d[i].nc3 == 0) {
-      connect3d[i].neigh_c3 = nullptr;
-      connect3d[i].cwhich_c3 = nullptr;
-    } else {
+    if (connect3d[i].nc3) {
       connect3d[i].neigh_c3 = neigh_c3[i];
       connect3d[i].cwhich_c3 = cwhich_c3[i];
+    } else {
+      connect3d[i].neigh_c3 = nullptr;
+      connect3d[i].cwhich_c3 = nullptr;
     }
   }
 
@@ -2842,7 +2842,7 @@ void FixSurfaceGlobal::connectivity3d()
           if (n == connect3d[i].neigh_e1[medge]) skipflag = 1;
         if (skipflag) continue;
 
-        connect3d[i].neigh_c1[j] = ctris[tris[i].p1][m];
+        connect3d[i].neigh_c1[j] = n;
         j++;
       }
     }
@@ -2859,7 +2859,7 @@ void FixSurfaceGlobal::connectivity3d()
           if (n == connect3d[i].neigh_e2[medge]) skipflag = 1;
         if (skipflag) continue;
 
-        connect3d[i].neigh_c2[j] = ctris[tris[i].p2][m];
+        connect3d[i].neigh_c2[j] = n;
         j++;
       }
     }
@@ -2876,7 +2876,7 @@ void FixSurfaceGlobal::connectivity3d()
           if (n == connect3d[i].neigh_e3[medge]) skipflag = 1;
         if (skipflag) continue;
 
-        connect3d[i].neigh_c3[j] = ctris[tris[i].p3][m];
+        connect3d[i].neigh_c3[j] = n;
         j++;
       }
     }

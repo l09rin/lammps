@@ -143,6 +143,15 @@ class FixSurfaceLocal : public Fix {
   int *atom2connect;       // per-atom index into connect 2d/3d vecs, -1 if none
   int *connect2atom;       // per-connect index into atoms
 
+  // ragged 2d arrays for 2d connectivity for global case
+
+  tagint **neigh_p1,**neigh_p2;
+
+  // ragged 2d arrays for 3d connectivity for global case
+
+  tagint **neigh_e1,**neigh_e2,**neigh_e3;
+  tagint **neigh_c1,**neigh_c2,**neigh_c3;
+
   // size of local/ghost connection info vectors
 
   int nlocal_connect,nghost_connect;

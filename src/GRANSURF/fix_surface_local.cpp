@@ -29,21 +29,19 @@
 using namespace LAMMPS_NS;
 using namespace FixConst;
 
-// NOTE: remove self indices in connectivity3d_global
-// NOTE: when/how are edge neighs and corner neighs isolated from neigh list
-//       for both global and local tris
-
-// NOTE: change defines to static const in both files
 // NOTE: add input keyword option for multiple mol/STL files, like FSG
-// NOTE: need to populate rest of Connect2d vectors in connectivity2d/3d_final()
-// NOTE: epsilon should be defined as fraction of max surf size ?
+// NOTE: need to populate rest of Connect2d vectors in connectivity2d/3d_complete()
+//       after complete, how to propagate info to ghost connections
+// NOTE: add debug method here and in global to print out full Connect2d/3d for each line/tri
+//       so can debug/compare between global and local
+// NOTE: set exact size for comm_border, after Connect23/3d is built
 // NOTE: need one allocater for ints, one for tagints ?
+
+// NOTE: epsilon should be defined as fraction of max surf size ?
+// NOTE: change defines to static const here and in global
 // NOTE: what if lines/tris already exist (from data file)
 //       when read more from STL or molecule file ?
-// NOTE: comm of ghost lines/tris needed before final connectivity can be done
-//       then re-comm of connectivity after it is done
 // NOTE: how to set and limit MAXTRIPOINT for allocators, no overallocation now
-// NOTE: set exact size for comm_border, after Connect23/3d is built
 // NOTE: print out stats on connections, same as fix surf/global
 // NOTE: need more tallying in memory_usage()
 // NOTE: total bin count for Rvous seems too large when small # of surfs - check nbins ?
@@ -1301,7 +1299,7 @@ void FixSurfaceLocal::connectivity2d_local()
   memory->sfree(inbuf);
 
   // loop over received Rvous datums
-  // p1/p2_counts = # of connections for each point on my lines
+  // p12_counts = # of connections for each point on my lines
   // this will overcount (potentially by 4x) due to bins overlapping by EPS
   // datums do NOT include self connection
 
@@ -1321,7 +1319,7 @@ void FixSurfaceLocal::connectivity2d_local()
     else p2_counts[iline]++;
   }
 
-  // allocate ragged neigh_p1/p2 vectors using p1/p2_counts
+  // allocate ragged neigh_p12 vectors using p12_counts
   // this will overallocate because of bins overlapping by EPS
   //   will reallocate below when know exact size
 
@@ -1330,8 +1328,8 @@ void FixSurfaceLocal::connectivity2d_local()
   memory->create_ragged(neigh_p2,nlocal_connect,p2_counts,"surface/local:neigh_p2");
 
   // loop over received Rvous datums
-  // add each atomID to neigh_p1/p2 but only if not already in the list
-  // recalculate exact p1/p2_counts
+  // add each atomID to neigh_p12 but only if not already in the list
+  // recalculate exact p12_counts
 
   for (i = 0; i < nlocal_connect; i++)
     p1_counts[i] = p2_counts[i] = 0;
@@ -1366,9 +1364,9 @@ void FixSurfaceLocal::connectivity2d_local()
     }
   }
   
-  // set np1,np2 via exact p1/p2_counts
+  // set np1,np2 via exact p12_counts
   // likewise allocate all vectors within Connect2d
-  // use ragged neigh_p1/p2 to set neigh_p1/p2 within Connect2d
+  // use ragged neigh_p12 to set neigh_p12 within Connect2d
   // other vectors will be set in connectivity2d_complete()
 
   for (i = 0; i < nlocal_connect; i++) {
@@ -2425,11 +2423,13 @@ void FixSurfaceLocal::extract_from_stlfile(char *filename)
 }
 
 /* ----------------------------------------------------------------------
-   create and initialize Connect2d info for all lines
+   create and initialize partial Connect2d info for all lines
    this can be done with EXACT point matching
      since global points were inferred from molecule files
      and all procs store a copy of all global points
-   info stored in connect2dall
+   info is stored here in connect2dall
+     will be stored in connect2d in assign2d()
+     remainder will be initialized in connect2d_complete()
 ------------------------------------------------------------------------- */
 
 void FixSurfaceLocal::connectivity2d_global()
@@ -2464,7 +2464,7 @@ void FixSurfaceLocal::connectivity2d_global()
     plines[lines[i].p2][counts[lines[i].p2]++] = i;
   }
 
-  // p1/p2_counts = # of lines connecting to endpoints p1/p2 of each line
+  // p12_counts = # of lines connecting to endpoints p12 of each line
   // do NOT include self
 
   int *p1_counts,*p2_counts;
@@ -2478,7 +2478,6 @@ void FixSurfaceLocal::connectivity2d_global()
 
   // allocate all ragged arrays which connect2dall will point to
 
-  int **neigh_p1,**neigh_p2;
   memory->create_ragged(neigh_p1,nlines,p1_counts,"surface/local:neigh_p1");
   memory->create_ragged(neigh_p2,nlines,p2_counts,"surface/local:neigh_p2");
 
@@ -2529,11 +2528,13 @@ void FixSurfaceLocal::connectivity2d_global()
 }
 
 /* ----------------------------------------------------------------------
-   create and initialize Connect3d info for all triangles
+   create and initialize partial Connect3d info for all tris
    this can be done with EXACT point matching
      since global points were inferred from molecule or STL files
      and all procs store a copy of all global points
-   stored in connect3dall
+   info is stored here in connect3dall
+     will be stored in connect3d in assign3d()
+     remainder will be initialized in connect3d_complete()
 ------------------------------------------------------------------------- */
 
 void FixSurfaceLocal::connectivity3d_global()
@@ -2544,15 +2545,17 @@ void FixSurfaceLocal::connectivity3d_global()
   // connect2atom will be initialized when assign to procs
 
   connect3dall = (Connect3d *) memory->smalloc(ntris*sizeof(Connect3d),
-                                               "surface/local:connect3d");
+                                               "surface/local:connect3dall");
+
+  // create hash = map of unique edges
+  //   key = <p1,p2> indices of 2 points, in either order
+  //   value = index of the unique edge (0 to Nedge-1)
+  // tri2edges[i][j] = index of unique edge for tri I and edge J
+  // nedges = total count of unique edges
+
   int **tri2edge;
   memory->create(tri2edge,ntris,3,"surfface/global::tri2edge");
 
-  // create a map
-  // key = <p1,p2> indices of 2 points, in either order
-  // value = index into count of unique edges
-  // tri2edge = which unique edge each tri edge is associated with
-  
   std::map<std::tuple<int,int>,int> hash;
   int nedges = 0;
 
@@ -2596,10 +2599,8 @@ void FixSurfaceLocal::connectivity3d_global()
   }
 
   // setup tri edge connectivity lists
-  // count # of tris containing each edge
-  // create ragged 2d array to contain all edge indices, then fill it
-  // set neigh_e123 vector ptrs in connect3dall to rows of ragged array
-  // ne123 counts and vectors include self tri
+  // counts = # of tris containing each edge (including self)
+  // etris = ragged 2d array with indices of tris which contain each edge
 
   int *counts;
   memory->create(counts,nedges,"surface/local:count");
@@ -2623,32 +2624,84 @@ void FixSurfaceLocal::connectivity3d_global()
     etris[tri2edge[i][2]][counts[tri2edge[i][2]]++] = i;
   }
 
-  // in connect3dall, neigh_e123 stores global tri indices (0 to Ntri-1)
-  // in final connect3d, neigh_e123 will store tri IDs
+  // e123_counts = # of edges connecting to edges e123 of each tri
+  // do NOT include self
+
+  int *e1_counts,*e2_counts,*e3_counts;
+  memory->create(e1_counts,ntris,"surface/local:e1_counts");
+  memory->create(e2_counts,ntris,"surface/local:e2_counts");
+  memory->create(e3_counts,ntris,"surface/local:e3_counts");
 
   for (int i = 0; i < ntris; i++) {
-    connect3dall[i].ne1 = counts[tri2edge[i][0]];
-    if (connect3dall[i].ne1 == 1) connect3dall[i].neigh_e1 = nullptr;
-    else connect3dall[i].neigh_e1 = etris[tri2edge[i][0]];
-
-    connect3dall[i].ne2 = counts[tri2edge[i][1]];
-    if (connect3dall[i].ne2 == 1) connect3dall[i].neigh_e2 = nullptr;
-    else connect3dall[i].neigh_e2 = etris[tri2edge[i][1]];
-
-    connect3dall[i].ne3 = counts[tri2edge[i][2]];
-    if (connect3dall[i].ne3 == 1) connect3dall[i].neigh_e3 = nullptr;
-    else connect3dall[i].neigh_e3 = etris[tri2edge[i][2]];
+    e1_counts[i] = counts[tri2edge[i][0]] - 1;
+    e2_counts[i] = counts[tri2edge[i][1]] - 1;
+    e3_counts[i] = counts[tri2edge[i][2]] - 1;
   }
 
+  // allocate all edge ragged arrays which connect3dall will point to
+
+  memory->create_ragged(neigh_e1,ntris,e1_counts,"surface/global:neigh_e1");
+  memory->create_ragged(neigh_e2,ntris,e2_counts,"surface/global:neigh_e2");
+  memory->create_ragged(neigh_e3,ntris,e3_counts,"surface/global:neigh_e3");
+  
+  // set connectedall vector ptrs to rows of corresponding ragged arrays
+
+  for (int i = 0; i < ntris; i++) {
+    connect3dall[i].ne1 = e1_counts[i];
+    if (connect3dall[i].ne1) connect3dall[i].neigh_e1 = neigh_e1[i];
+    else connect3dall[i].neigh_e1 = nullptr;
+    connect3dall[i].ne2 = e2_counts[i];
+    if (connect3dall[i].ne2) connect3dall[i].neigh_e2 = neigh_e2[i];
+    else connect3dall[i].neigh_e1 = nullptr;
+    connect3dall[i].ne1 = e1_counts[i];
+    if (connect3dall[i].ne3) connect3dall[i].neigh_e3 = neigh_e3[i];
+    else connect3dall[i].neigh_e3 = nullptr;
+  }
+
+  // initialize connect3dall edge neigh vectors for each edge of each tri
+  //   do NOT include self
+  // in connecte3dall, neigh_e123 stores global tri indices (0 to Ntri-1)
+  // in final connect3d, neigh_e123 will store tri IDs
+
+  int j,m;
+
+  for (int i = 0; i < ntris; i++) {
+    if (connect3dall[i].ne1) {
+      j = 0;
+      for (m = 0; m < counts[tri2edge[i][0]]; m++) {
+        if (etris[tri2edge[i][0]][m] == i) continue;
+        connect3dall[i].neigh_e1[j] = etris[tri2edge[i][0]][m];
+        j++;
+      }
+    }
+    if (connect3dall[i].ne2) {
+      j = 0;
+      for (m = 0; m < counts[tri2edge[i][1]]; m++) {
+        if (etris[tri2edge[i][1]][m] == i) continue;
+        connect3dall[i].neigh_e2[j] = etris[tri2edge[i][1]][m];
+        j++;
+      }
+    }
+    if (connect3dall[i].ne3) {
+      j = 0;
+      for (m = 0; m < counts[tri2edge[i][2]]; m++) {
+        if (etris[tri2edge[i][2]][m] == i) continue;
+        connect3dall[i].neigh_e3[j] = etris[tri2edge[i][2]][m];
+        j++;
+      }
+    }
+  }
+  
   memory->destroy(counts);
   memory->destroy(tri2edge);
   memory->destroy(etris);
+  memory->destroy(e1_counts);
+  memory->destroy(e2_counts);
+  memory->destroy(e3_counts);
 
   // setup corner point connectivity lists
-  // count # of tris containing each point
-  // create ragged 2d array to contain all tri indices, then fill it
-  // set neigh_c123 vector ptrs in connect3dall to rows of ragged array
-  // nc123 counts and vectors include self tri
+  // counts = # of tris containing each point (including self)
+  // ctris = ragged 2d array with indices of tris which contain each point
 
   memory->create(counts,npoints,"surface/local:count");
 
@@ -2671,25 +2724,114 @@ void FixSurfaceLocal::connectivity3d_global()
     ctris[tris[i].p3][counts[tris[i].p3]++] = i;
   }
 
+  // c123_counts = # of tris connecting to corners c123 of each tri
+  // do NOT include self or tris which connect to an edge
+
+  int *c1_counts,*c2_counts,*c3_counts;
+  memory->create(c1_counts,ntris,"surface/local:c1_counts");
+  memory->create(c2_counts,ntris,"surface/local:c2_counts");
+  memory->create(c3_counts,ntris,"surface/local:c3_counts");
+
+  for (int i = 0; i < ntris; i++) {
+    c1_counts[i] = counts[tris[i].p1] - 1;
+    c1_counts[i] -= connect3dall[i].ne3 + connect3dall[i].ne1;
+    c2_counts[i] = counts[tris[i].p2] - 1;
+    c2_counts[i] -= connect3dall[i].ne1 + connect3dall[i].ne2;
+    c3_counts[i] = counts[tris[i].p3] - 1;
+    c3_counts[i] -= connect3dall[i].ne2 + connect3dall[i].ne3;
+  }
+
+  // allocate all corner ragged arrays which connect3dall will point to
+
+  memory->create_ragged(neigh_c1,ntris,c1_counts,"surface/global:neigh_c1");
+  memory->create_ragged(neigh_c2,ntris,c2_counts,"surface/global:neigh_c2");
+  memory->create_ragged(neigh_c3,ntris,c3_counts,"surface/global:neigh_c3");
+
+  // set connect3dall corner vector ptrs to rows of corresponding corner ragged arrays
+
+  for (int i = 0; i < ntris; i++) {
+    connect3dall[i].nc1 = c1_counts[i];
+    if (connect3dall[i].nc1) connect3dall[i].neigh_c1 = neigh_c1[i];
+    else connect3dall[i].neigh_c1 = nullptr;
+
+    connect3dall[i].nc2 = c2_counts[i];
+    if (connect3dall[i].nc2) connect3dall[i].neigh_c2 = neigh_c2[i];
+    else connect3dall[i].neigh_c2 = nullptr;
+
+    connect3dall[i].nc3 = c3_counts[i];
+    if (connect3dall[i].nc3) connect3dall[i].neigh_c3 = neigh_c3[i];
+    else connect3dall[i].neigh_c3 = nullptr;
+  }
+
+  // initialize connect3dall corner neigh vectors for each corner of each tri
+  // do NOT include self or tris which connect to an edge
+  // only include tris which only connect at the corner point
   // in connect3dall, neigh_c123 stores global tri indices (0 to Ntri-1)
   // in final connect3d, neigh_c123 will store tri IDs
 
+  int n,medge,skipflag;
+
   for (int i = 0; i < ntris; i++) {
-    connect3dall[i].nc1 = counts[tris[i].p1];
-    if (connect3dall[i].nc1 == 1) connect3dall[i].neigh_c1 = nullptr;
-    else connect3dall[i].neigh_c1 = ctris[tris[i].p1];
+    if (connect3dall[i].nc1) {
+      j = 0;
+      for (m = 0; m < counts[tris[i].p1]; m++) {
+        n = ctris[tris[i].p1][m];
+        if (n == i) continue;
 
-    connect3dall[i].nc2 = counts[tris[i].p2];
-    if (connect3dall[i].nc2 == 1) connect3dall[i].neigh_c2 = nullptr;
-    else connect3dall[i].neigh_c2 = ctris[tris[i].p2];
+        skipflag = 0;
+        for (medge = 0; medge < connect3dall[i].ne3; medge++)
+          if (n == connect3dall[i].neigh_e3[medge]) skipflag = 1;
+        for (medge = 0; medge < connect3dall[i].ne1; medge++)
+          if (n == connect3dall[i].neigh_e1[medge]) skipflag = 1;
+        if (skipflag) continue;
 
-    connect3dall[i].nc3 = counts[tris[i].p3];
-    if (connect3dall[i].nc3 == 1) connect3dall[i].neigh_c3 = nullptr;
-    else connect3dall[i].neigh_c3 = ctris[tris[i].p3];
+        connect3dall[i].neigh_c1[j] = n;
+        j++;
+      }
+    }
+    if (connect3dall[i].nc2) {
+      j = 0;
+      for (m = 0; m < counts[tris[i].p2]; m++) {
+        n = ctris[tris[i].p2][m];
+        if (n == i) continue;
+
+        skipflag = 0;
+        for (medge = 0; medge < connect3dall[i].ne1; medge++)
+          if (n == connect3dall[i].neigh_e1[medge]) skipflag = 1;
+        for (medge = 0; medge < connect3dall[i].ne2; medge++)
+          if (n == connect3dall[i].neigh_e2[medge]) skipflag = 1;
+        if (skipflag) continue;
+
+        connect3dall[i].neigh_c2[j] = n;
+        j++;
+      }
+    }
+    if (connect3dall[i].nc3) {
+      j = 0;
+      for (m = 0; m < counts[tris[i].p3]; m++) {
+        n = ctris[tris[i].p3][m];
+        if (n == i) continue;
+
+        skipflag = 0;
+        for (medge = 0; medge < connect3dall[i].ne2; medge++)
+          if (n == connect3dall[i].neigh_e2[medge]) skipflag = 1;
+        for (medge = 0; medge < connect3dall[i].ne3; medge++)
+          if (n == connect3dall[i].neigh_e3[medge]) skipflag = 1;
+        if (skipflag) continue;
+
+        connect3dall[i].neigh_c3[j] = n;
+        j++;
+      }
+    }
   }
-
+  
+  // clean up
+  
   memory->destroy(counts);
   memory->destroy(ctris);
+  memory->destroy(c1_counts);
+  memory->destroy(c2_counts);
+  memory->destroy(c3_counts);
 }
 
 /* ----------------------------------------------------------------------
@@ -2842,7 +2984,7 @@ void FixSurfaceLocal::assign2d()
       avec_line->data_atom_bonus(n,svalues);
 
       // allocate all vectors in Connect2d
-      // copy neigh_p1/p2 from global connect2dall to local connect2d
+      // copy neigh_p12 from global connect2dall to local connect2d
       //   reset global line indices to new line IDs beyond idmaxall
       // other vectors will be set in connectivity2d_complete()
 
@@ -2890,6 +3032,8 @@ void FixSurfaceLocal::assign2d()
   }
 
   memory->sfree(connect2dall);
+  memory->destroy(neigh_p1);
+  memory->destroy(neigh_p2);
 
   // recreate atom map that includes added lines
 
@@ -3059,7 +3203,7 @@ void FixSurfaceLocal::assign3d()
       avec_tri->data_atom_bonus(n,svalues);
 
       // allocate all vectors in Connect3d
-      // copy neigh_e1/e2/e3 from global connect3dall to local connect3d
+      // copy neigh_e123 from global connect3dall to local connect3d
       //   reset global tri indices to new tri IDs beyond idmaxall
       // other vectors will be set in connectivity3d_complete()
 
@@ -3127,6 +3271,12 @@ void FixSurfaceLocal::assign3d()
   }
 
   memory->sfree(connect3dall);
+  memory->destroy(neigh_e1);
+  memory->destroy(neigh_e2);
+  memory->destroy(neigh_e3);
+  memory->destroy(neigh_c1);
+  memory->destroy(neigh_c2);
+  memory->destroy(neigh_c3);
 
   // recreate atom map that includes added tris
 
@@ -3144,7 +3294,7 @@ void FixSurfaceLocal::assign3d()
 
 /* ----------------------------------------------------------------------
    assign values to all other fields in Connect2d for line connections
-   only np1,np2 and neigh_p1/p2 were previously assigned
+   only np1,np2 and neigh_p12 were previously assigned
 ------------------------------------------------------------------------- */
 
 void FixSurfaceLocal::connectivity2d_complete()
@@ -3154,8 +3304,8 @@ void FixSurfaceLocal::connectivity2d_complete()
 
 /* ----------------------------------------------------------------------
    assign values to all other fields in Connec3d for tri connections
-   only ne1,ne2,ne3 and neigh_e1/e2/e3 were previously assigned
-   only nc1,nc2,nc3 and neigh_c1/c2/c3 were previously assigned
+   only ne1,ne2,ne3 and neigh_e123 were previously assigned
+   only nc1,nc2,nc3 and neigh_c123 were previously assigned
 ------------------------------------------------------------------------- */
 
 void FixSurfaceLocal::connectivity3d_complete()
