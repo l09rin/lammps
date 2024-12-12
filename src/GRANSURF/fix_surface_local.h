@@ -112,6 +112,7 @@ class FixSurfaceLocal : public Fix {
  private:
   int dimension,mode;
   char *sourceID;
+  int flag_complete;    // whether one-time connectivity info has been calculated
 
   class AtomVecLine *avec_line;
   class AtomVecTri *avec_tri;
@@ -195,8 +196,8 @@ class FixSurfaceLocal : public Fix {
   Connect3d *connect3dall;
 
   int **plines;               // ragged 2d array for global line end pt lists
-  int **elist;                // ragged 2d array for global tri edge lists
-  int **clist;                // ragged 2d array for global tri corner pt lists
+  int **etris;                // ragged 2d array for global tri edge lists
+  int **ctris;                // ragged 2d array for global tri corner pt lists
 
   struct OnePt {               // one end/corner point of iline/itri in a bin
     int iatom;                 // local index of the line/tri in atom list
@@ -252,10 +253,10 @@ class FixSurfaceLocal : public Fix {
   void assign2d();
   void assign3d();
 
-  // final stages of connectivity build for both local and global cases
+  // finish the connectivity build for both local and global cases
 
-  void connectivity2d_final();
-  void connectivity3d_final();
+  void connectivity2d_complete();
+  void connectivity3d_complete();
 };
 
 }

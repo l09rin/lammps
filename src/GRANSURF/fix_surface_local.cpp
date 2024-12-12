@@ -29,6 +29,10 @@
 using namespace LAMMPS_NS;
 using namespace FixConst;
 
+// NOTE: remove self indices in connectivity3d_global
+// NOTE: when/how are edge neighs and corner neighs isolated from neigh list
+//       for both global and local tris
+
 // NOTE: change defines to static const in both files
 // NOTE: add input keyword option for multiple mol/STL files, like FSG
 // NOTE: need to populate rest of Connect2d vectors in connectivity2d/3d_final()
@@ -108,6 +112,8 @@ FixSurfaceLocal::FixSurfaceLocal(LAMMPS *lmp, int narg, char **arg) :
     if (imol >= 0) mode = MOLTEMPLATE;
     else mode = STLFILE;
   }
+
+  flag_complete = 0;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -233,10 +239,6 @@ void FixSurfaceLocal::post_constructor()
     lines = nullptr;
     tris = nullptr;
 
-    plines = nullptr;
-    elist = nullptr;
-    clist = nullptr;
-
     // read in lines/tris from appropriate sourrce
     // each proc builds global data structs of points/lines/tris
 
@@ -262,10 +264,6 @@ void FixSurfaceLocal::post_constructor()
     memory->sfree(points);
     memory->sfree(lines);
     memory->sfree(tris);
-
-    memory->destroy(plines);
-    memory->destroy(elist);
-    memory->destroy(clist);
   }
 
   // set max size for comm of connection info
@@ -289,12 +287,14 @@ void FixSurfaceLocal::grow_arrays(int nmax)
 
 void FixSurfaceLocal::setup_pre_neighbor()
 {
-  // fill in remaining fields in Connect2d or Connect3d
-  // NOTE: only do this one time, via firstflag
-  // NOTE: at this point, should have ghost lines/tris and their Connect info
-  
-  if (dimension == 2) connectivity2d_final();
-  else connectivity3d_final();
+  // one-time calcualtion of remaining fields in Connect2d/3d
+  // cannot do until now, b/c need ghost connections via border comm
+
+  if (!flag_complete) {
+    if (dimension == 2) connectivity2d_complete();
+    else connectivity3d_complete();
+    flag_complete = 1;
+  }
 
   pre_neighbor();
 }
@@ -1366,23 +1366,41 @@ void FixSurfaceLocal::connectivity2d_local()
     }
   }
   
-  // use exact p1/p2_counts and ragged neigh_p1/p2 to allocate neigh_p1/p2 within Connect2d
-  // also set np1,np2
+  // set np1,np2 via exact p1/p2_counts
+  // likewise allocate all vectors within Connect2d
+  // use ragged neigh_p1/p2 to set neigh_p1/p2 within Connect2d
+  // other vectors will be set in connectivity2d_complete()
 
   for (i = 0; i < nlocal_connect; i++) {
     connect2d[i].np1 = p1_counts[i];;
     if (connect2d[i].np1) {
       connect2d[i].neigh_p1 = tcp->get(connect2d[i].np1,pool2d[i].neigh_p1);
+      connect2d[i].pwhich_p1 = tcp->get(connect2d[i].np1,pool2d[i].pwhich_p1);
+      connect2d[i].nside_p1 = tcp->get(connect2d[i].np1,pool2d[i].nside_p1);
+      connect2d[i].aflag_p1 = tcp->get(connect2d[i].np1,pool2d[i].aflag_p1);
       for (j = 0; j < connect2d[i].np1; j++)
         connect2d[i].neigh_p1[j] = neigh_p1[i][j];
-    } else connect2d[i].neigh_p1 = nullptr;
+    } else {
+      connect2d[i].neigh_p1 = nullptr;
+      connect2d[i].pwhich_p1 = nullptr;
+      connect2d[i].nside_p1 = nullptr;
+      connect2d[i].aflag_p1 = nullptr;
+    }
     
     connect2d[i].np2 = p2_counts[i];;
     if (connect2d[i].np2) {
       connect2d[i].neigh_p2 = tcp->get(connect2d[i].np2,pool2d[i].neigh_p2);
+      connect2d[i].pwhich_p2 = tcp->get(connect2d[i].np2,pool2d[i].pwhich_p2);
+      connect2d[i].nside_p2 = tcp->get(connect2d[i].np2,pool2d[i].nside_p2);
+      connect2d[i].aflag_p2 = tcp->get(connect2d[i].np2,pool2d[i].aflag_p2);
       for (j = 0; j < connect2d[i].np2; j++)
         connect2d[i].neigh_p2[j] = neigh_p2[i][j];
-    } else connect2d[i].neigh_p2 = nullptr;
+    } else {
+      connect2d[i].neigh_p2 = nullptr;
+      connect2d[i].pwhich_p2 = nullptr;
+      connect2d[i].nside_p2 = nullptr;
+      connect2d[i].aflag_p2 = nullptr;
+    }
   }
 
   // clean up
@@ -1725,29 +1743,64 @@ void FixSurfaceLocal::connectivity3d_local()
     connect3d[i].nc3 = n3_counts[i] - connect3d[i].ne3 - connect3d[i].ne2;
   }
 
-  // allocate neigh_e123 and neigh_c123 vectors within Connect3d
-  // these are now exactly the correct length
+  // use exact n1/n2/n3_counts to allocate all vectors within Connect3d
 
   for (i = 0; i < nlocal_connect; i++) {
     if (connect3d[i].ne1) {
       connect3d[i].neigh_e1 = tcp->get(connect3d[i].ne1,pool3d[i].neigh_e1);
-    } else connect3d[i].neigh_e1 = nullptr;
+      connect3d[i].ewhich_e1 = tcp->get(connect3d[i].ne1,pool3d[i].ewhich_e1);
+      connect3d[i].nside_e1 = tcp->get(connect3d[i].ne1,pool3d[i].nside_e1);
+      connect3d[i].aflag_e1 = tcp->get(connect3d[i].ne1,pool3d[i].aflag_e1);
+    } else {
+      connect3d[i].neigh_e1 = nullptr;
+      connect3d[i].ewhich_e1 = nullptr;
+      connect3d[i].nside_e1 = nullptr;
+      connect3d[i].aflag_e1 = nullptr;
+    }
     if (connect3d[i].ne2) {
       connect3d[i].neigh_e2 = tcp->get(connect3d[i].ne2,pool3d[i].neigh_e2);
-    } else connect3d[i].neigh_e2 = nullptr;
+      connect3d[i].ewhich_e2 = tcp->get(connect3d[i].ne2,pool3d[i].ewhich_e2);
+      connect3d[i].nside_e2 = tcp->get(connect3d[i].ne2,pool3d[i].nside_e2);
+      connect3d[i].aflag_e2 = tcp->get(connect3d[i].ne2,pool3d[i].aflag_e2);
+    } else {
+      connect3d[i].neigh_e2 = nullptr;
+      connect3d[i].ewhich_e2 = nullptr;
+      connect3d[i].nside_e2 = nullptr;
+      connect3d[i].aflag_e2 = nullptr;
+    }
     if (connect3d[i].ne3) {
       connect3d[i].neigh_e3 = tcp->get(connect3d[i].ne3,pool3d[i].neigh_e3);
-    } else connect3d[i].neigh_e3 = nullptr;
+      connect3d[i].ewhich_e3 = tcp->get(connect3d[i].ne3,pool3d[i].ewhich_e3);
+      connect3d[i].nside_e3 = tcp->get(connect3d[i].ne3,pool3d[i].nside_e3);
+      connect3d[i].aflag_e3 = tcp->get(connect3d[i].ne3,pool3d[i].aflag_e3);
+    } else {
+      connect3d[i].neigh_e3 = nullptr;
+      connect3d[i].ewhich_e3 = nullptr;
+      connect3d[i].nside_e3 = nullptr;
+      connect3d[i].aflag_e3 = nullptr;
+    }
 
     if (connect3d[i].nc1) {
       connect3d[i].neigh_c1 = tcp->get(connect3d[i].nc1,pool3d[i].neigh_c1);
-    } else connect3d[i].neigh_c1 = nullptr;
+      connect3d[i].cwhich_c1 = tcp->get(connect3d[i].nc1,pool3d[i].cwhich_c1);
+    } else {
+      connect3d[i].neigh_c1 = nullptr;
+      connect3d[i].cwhich_c1 = nullptr;
+    }
     if (connect3d[i].nc2) {
       connect3d[i].neigh_c2 = tcp->get(connect3d[i].nc2,pool3d[i].neigh_c2);
-    } else connect3d[i].neigh_c2 = nullptr;
+      connect3d[i].cwhich_c2 = tcp->get(connect3d[i].nc2,pool3d[i].cwhich_c2);
+    } else {
+      connect3d[i].neigh_c2 = nullptr;
+      connect3d[i].cwhich_c2 = nullptr;
+    }
     if (connect3d[i].nc3) {
       connect3d[i].neigh_c3 = tcp->get(connect3d[i].nc3,pool3d[i].neigh_c3);
-    } else connect3d[i].neigh_c3 = nullptr;
+      connect3d[i].cwhich_c3 = tcp->get(connect3d[i].nc3,pool3d[i].cwhich_c3);
+    } else {
+      connect3d[i].neigh_c3 = nullptr;
+      connect3d[i].cwhich_c3 = nullptr;
+    }
   }
 
   // populate neigh_e123 vectors within Connect3d
@@ -2401,6 +2454,7 @@ void FixSurfaceLocal::connectivity2d_global()
     counts[lines[i].p2]++;
   }
 
+  int **plines;
   memory->create_ragged(plines,npoints,counts,"surface/local:plines");
 
   for (int i = 0; i < npoints; i++) counts[i] = 0;
@@ -2440,23 +2494,25 @@ void FixSurfaceLocal::connectivity2d_global()
     else connect2dall[i].neigh_p2 = neigh_p2[i];
   }
 
-  // initialize connect2d neigh vectors for each end point of each line
-  // do NOT include self
+  // initialize connect2dall neigh vectors for each end point of each line
+  //   do NOT include self
+  // in connect2dall, neigh_p12 stores global line indices (0 to Nline-1)
+  // in final connect2d, neigh_p12 will store line IDs
 
   int j,m;
 
   for (int i = 0; i < nlines; i++) {
-    if (connect2d[i].np1) {
+    if (p1_counts[i]) {
       j = 0;
-      for (m = 0; m < counts[lines[i].p1]; m++) {
+      for (m = 0; m <= p1_counts[i]; m++) {
         if (plines[lines[i].p1][m] == i) continue;
         connect2dall[i].neigh_p1[j] = plines[lines[i].p1][m];
         j++;
       }
     }
-    if (connect2d[i].np2) {
+    if (p2_counts[i]) {
       j = 0;
-      for (m = 0; m < counts[lines[i].p2]; m++) {
+      for (m = 0; m <= p2_counts[i]; m++) {
         if (plines[lines[i].p2][m] == i) continue;
         connect2dall[i].neigh_p2[j] = plines[lines[i].p2][m];
         j++;
@@ -2495,7 +2551,8 @@ void FixSurfaceLocal::connectivity3d_global()
   // create a map
   // key = <p1,p2> indices of 2 points, in either order
   // value = index into count of unique edges
-
+  // tri2edge = which unique edge each tri edge is associated with
+  
   std::map<std::tuple<int,int>,int> hash;
   int nedges = 0;
 
@@ -2541,7 +2598,7 @@ void FixSurfaceLocal::connectivity3d_global()
   // setup tri edge connectivity lists
   // count # of tris containing each edge
   // create ragged 2d array to contain all edge indices, then fill it
-  // set neigh_e123 vector ptrs in connect3d to rows of ragged array
+  // set neigh_e123 vector ptrs in connect3dall to rows of ragged array
   // ne123 counts and vectors include self tri
 
   int *counts;
@@ -2555,14 +2612,15 @@ void FixSurfaceLocal::connectivity3d_global()
     counts[tri2edge[i][2]]++;
   }
 
-  memory->create_ragged(elist,nedges,counts,"surface/local:elist");
+  int **etris;
+  memory->create_ragged(etris,nedges,counts,"surface/local:etris");
 
   for (int i = 0; i < nedges; i++) counts[i] = 0;
 
   for (int i = 0; i < ntris; i++) {
-    elist[tri2edge[i][0]][counts[tri2edge[i][0]]++] = i;
-    elist[tri2edge[i][1]][counts[tri2edge[i][1]]++] = i;
-    elist[tri2edge[i][2]][counts[tri2edge[i][2]]++] = i;
+    etris[tri2edge[i][0]][counts[tri2edge[i][0]]++] = i;
+    etris[tri2edge[i][1]][counts[tri2edge[i][1]]++] = i;
+    etris[tri2edge[i][2]][counts[tri2edge[i][2]]++] = i;
   }
 
   // in connect3dall, neigh_e123 stores global tri indices (0 to Ntri-1)
@@ -2571,24 +2629,25 @@ void FixSurfaceLocal::connectivity3d_global()
   for (int i = 0; i < ntris; i++) {
     connect3dall[i].ne1 = counts[tri2edge[i][0]];
     if (connect3dall[i].ne1 == 1) connect3dall[i].neigh_e1 = nullptr;
-    else connect3dall[i].neigh_e1 = elist[tri2edge[i][0]];
+    else connect3dall[i].neigh_e1 = etris[tri2edge[i][0]];
 
     connect3dall[i].ne2 = counts[tri2edge[i][1]];
     if (connect3dall[i].ne2 == 1) connect3dall[i].neigh_e2 = nullptr;
-    else connect3dall[i].neigh_e2 = elist[tri2edge[i][1]];
+    else connect3dall[i].neigh_e2 = etris[tri2edge[i][1]];
 
     connect3dall[i].ne3 = counts[tri2edge[i][2]];
     if (connect3dall[i].ne3 == 1) connect3dall[i].neigh_e3 = nullptr;
-    else connect3dall[i].neigh_e3 = elist[tri2edge[i][2]];
+    else connect3dall[i].neigh_e3 = etris[tri2edge[i][2]];
   }
 
   memory->destroy(counts);
   memory->destroy(tri2edge);
+  memory->destroy(etris);
 
   // setup corner point connectivity lists
   // count # of tris containing each point
   // create ragged 2d array to contain all tri indices, then fill it
-  // set neigh_c123 vector ptrs in connect3d to rows of ragged array
+  // set neigh_c123 vector ptrs in connect3dall to rows of ragged array
   // nc123 counts and vectors include self tri
 
   memory->create(counts,npoints,"surface/local:count");
@@ -2601,14 +2660,15 @@ void FixSurfaceLocal::connectivity3d_global()
     counts[tris[i].p3]++;
   }
 
-  memory->create_ragged(clist,npoints,counts,"surface/local:clist");
+  int **ctris;
+  memory->create_ragged(ctris,npoints,counts,"surface/local:ctris");
 
   for (int i = 0; i < npoints; i++) counts[i] = 0;
 
   for (int i = 0; i < ntris; i++) {
-    clist[tris[i].p1][counts[tris[i].p1]++] = i;
-    clist[tris[i].p2][counts[tris[i].p2]++] = i;
-    clist[tris[i].p3][counts[tris[i].p3]++] = i;
+    ctris[tris[i].p1][counts[tris[i].p1]++] = i;
+    ctris[tris[i].p2][counts[tris[i].p2]++] = i;
+    ctris[tris[i].p3][counts[tris[i].p3]++] = i;
   }
 
   // in connect3dall, neigh_c123 stores global tri indices (0 to Ntri-1)
@@ -2617,18 +2677,19 @@ void FixSurfaceLocal::connectivity3d_global()
   for (int i = 0; i < ntris; i++) {
     connect3dall[i].nc1 = counts[tris[i].p1];
     if (connect3dall[i].nc1 == 1) connect3dall[i].neigh_c1 = nullptr;
-    else connect3dall[i].neigh_c1 = clist[tris[i].p1];
+    else connect3dall[i].neigh_c1 = ctris[tris[i].p1];
 
     connect3dall[i].nc2 = counts[tris[i].p2];
     if (connect3dall[i].nc2 == 1) connect3dall[i].neigh_c2 = nullptr;
-    else connect3dall[i].neigh_c2 = clist[tris[i].p2];
+    else connect3dall[i].neigh_c2 = ctris[tris[i].p2];
 
     connect3dall[i].nc3 = counts[tris[i].p3];
     if (connect3dall[i].nc3 == 1) connect3dall[i].neigh_c3 = nullptr;
-    else connect3dall[i].neigh_c3 = clist[tris[i].p3];
+    else connect3dall[i].neigh_c3 = ctris[tris[i].p3];
   }
 
   memory->destroy(counts);
+  memory->destroy(ctris);
 }
 
 /* ----------------------------------------------------------------------
@@ -2780,31 +2841,48 @@ void FixSurfaceLocal::assign2d()
 
       avec_line->data_atom_bonus(n,svalues);
 
-      // copy connectivity for global line I to local list
-      // replace neigh p1/p2 ptrs into plines with tcp pool allocs
-      // reset endpt line IDs to new IDs beyond idmaxall
+      // allocate all vectors in Connect2d
+      // copy neigh_p1/p2 from global connect2dall to local connect2d
+      //   reset global line indices to new line IDs beyond idmaxall
+      // other vectors will be set in connectivity2d_complete()
 
       if (nlocal_connect == nmax_connect) grow_connect();
       memcpy(&connect2d[nlocal_connect],&connect2dall[i],sizeof(Connect2d));
 
       num = connect2d[nlocal_connect].np1;
-      global = connect2d[nlocal_connect].neigh_p1;
+      global = connect2dall[nlocal_connect].neigh_p1;
       if (num) {
-        local = connect2d[nlocal_connect].neigh_p1 =
-          tcp->get(num,pool2d[nlocal_connect].neigh_p1);
+        connect2d[nlocal_connect].neigh_p1 = tcp->get(num,pool2d[nlocal_connect].neigh_p1);
+        connect2d[nlocal_connect].pwhich_p1 = tcp->get(num,pool2d[nlocal_connect].pwhich_p1);
+        connect2d[nlocal_connect].nside_p1 = tcp->get(num,pool2d[nlocal_connect].nside_p1);
+        connect2d[nlocal_connect].aflag_p1 = tcp->get(num,pool2d[nlocal_connect].aflag_p1);
+        local = connect2d[nlocal_connect].neigh_p1;
         for (j = 0; j < num; j++)
           local[j] = global[j] + idmaxall + 1;
-      } else connect2d[nlocal_connect].neigh_p1 = nullptr;
-
+      } else {
+        connect2d[nlocal_connect].neigh_p1 = nullptr;
+        connect2d[nlocal_connect].pwhich_p1 = nullptr;
+        connect2d[nlocal_connect].nside_p1 = nullptr;
+        connect2d[nlocal_connect].aflag_p1 = nullptr;
+      }
+      
       num = connect2d[nlocal_connect].np2;
-      global = connect2d[nlocal_connect].neigh_p2;
+      global = connect2dall[nlocal_connect].neigh_p2;
       if (num) {
-        local = connect2d[nlocal_connect].neigh_p2 =
-          tcp->get(num,pool2d[nlocal_connect].neigh_p2);
+        connect2d[nlocal_connect].neigh_p2 = tcp->get(num,pool2d[nlocal_connect].neigh_p2);
+        connect2d[nlocal_connect].pwhich_p2 = tcp->get(num,pool2d[nlocal_connect].pwhich_p2);
+        connect2d[nlocal_connect].nside_p2 = tcp->get(num,pool2d[nlocal_connect].nside_p2);
+        connect2d[nlocal_connect].aflag_p2 = tcp->get(num,pool2d[nlocal_connect].aflag_p2);
+        local = connect2d[nlocal_connect].neigh_p2;
         for (j = 0; j < num; j++)
           local[j] = global[j] + idmaxall + 1;
-      } else connect2d[nlocal_connect].neigh_p2 = nullptr;
-
+      } else {
+        connect2d[nlocal_connect].neigh_p2 = nullptr;
+        connect2d[nlocal_connect].pwhich_p2 = nullptr;
+        connect2d[nlocal_connect].nside_p2 = nullptr;
+        connect2d[nlocal_connect].aflag_p2 = nullptr;
+      }
+      
       connect2atom[nlocal_connect] = n;
       atom2connect[n] = nlocal_connect;
       nlocal_connect++;
@@ -2980,16 +3058,16 @@ void FixSurfaceLocal::assign3d()
 
       avec_tri->data_atom_bonus(n,svalues);
 
-      // copy connectivity for globa triangle I to local list
-      // replace neigh e1/e2/e3 ptrs into elist with tcp pool allocs
-      // replace neigh c1/c2/c3 ptrs into clist with tcp pool allocs
-      // reset edge and corner tri IDs to new IDs beyond idmaxall
+      // allocate all vectors in Connect3d
+      // copy neigh_e1/e2/e3 from global connect3dall to local connect3d
+      //   reset global tri indices to new tri IDs beyond idmaxall
+      // other vectors will be set in connectivity3d_complete()
 
       if (nlocal_connect == nmax_connect) grow_connect();
       memcpy(&connect3d[nlocal_connect],&connect3dall[i],sizeof(Connect3d));
 
       num = connect3d[nlocal_connect].ne1;
-      global = connect3d[nlocal_connect].neigh_e1;
+      global = connect3dall[nlocal_connect].neigh_e1;
       if (num) {
         local = connect3d[nlocal_connect].neigh_e1 =
           tcp->get(num,pool3d[nlocal_connect].neigh_e1);
@@ -2998,7 +3076,7 @@ void FixSurfaceLocal::assign3d()
       } else connect3d[nlocal_connect].neigh_e1 = nullptr;
 
       num = connect3d[nlocal_connect].ne2;
-      global = connect3d[nlocal_connect].neigh_e2;
+      global = connect3dall[nlocal_connect].neigh_e2;
       if (num) {
         local = connect3d[nlocal_connect].neigh_e2 =
           tcp->get(num,pool3d[nlocal_connect].neigh_e2);
@@ -3069,7 +3147,7 @@ void FixSurfaceLocal::assign3d()
    only np1,np2 and neigh_p1/p2 were previously assigned
 ------------------------------------------------------------------------- */
 
-void FixSurfaceLocal::connectivity2d_final()
+void FixSurfaceLocal::connectivity2d_complete()
 {
   
 }
@@ -3080,6 +3158,6 @@ void FixSurfaceLocal::connectivity2d_final()
    only nc1,nc2,nc3 and neigh_c1/c2/c3 were previously assigned
 ------------------------------------------------------------------------- */
 
-void FixSurfaceLocal::connectivity3d_final()
+void FixSurfaceLocal::connectivity3d_complete()
 {
 }
