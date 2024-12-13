@@ -254,7 +254,7 @@ FixSurfaceGlobal::FixSurfaceGlobal(LAMMPS *lmp, int narg, char **arg) :
         error->all(FLERR,"Fix surface/global smaxtype < input surf types");
       maxsurftype = smaxtype;
       iarg += 2;
-    } else if (strcmp(arg[iarg],"flag") == 0) {
+    } else if (strcmp(arg[iarg],"flat") == 0) {
       if (iarg+2 > narg) error->all(FLERR,"Illegal fix surface/global command");
       double flat = utils::numeric(FLERR,arg[iarg+1],false,lmp);
       if (flat < 0.0 || flat > 90.0)
@@ -2892,7 +2892,7 @@ void FixSurfaceGlobal::connectivity3d()
 
   // set connect3d cwhich for each end point of each line
   // see fsg.h file for an explanation of each corner vector in Connect3d
-  // aflag is based on dot and cross product of 2 connected line normals
+  // aflag is based on dot and cross product of 2 connected tri normals
 
   for (int i = 0; i < ntris; i++) {
     for (m = 0; m < connect3d[i].nc1; m++) {
@@ -3057,7 +3057,6 @@ void FixSurfaceGlobal::surface_attributes()
     }
 
   } else {
-
     for (int i = 0; i < nsurf; i++) {
       p1 = points[tris[i].p1].x;
       p2 = points[tris[i].p2].x;

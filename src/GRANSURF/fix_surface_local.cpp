@@ -19,6 +19,7 @@
 #include "comm.h"
 #include "domain.h"
 #include "error.h"
+#include "math_const.h"
 #include "math_extra.h"
 #include "memory.h"
 #include "molecule.h"
@@ -28,8 +29,10 @@
 
 using namespace LAMMPS_NS;
 using namespace FixConst;
+using namespace MathConst;
 
 // NOTE: add input keyword option for multiple mol/STL files, like FSG
+// NOTE: add optional flat keyword
 // NOTE: need to populate rest of Connect2d vectors in connectivity2d/3d_complete()
 //       after complete, how to propagate info to ghost connections
 // NOTE: add debug method here and in global to print out full Connect2d/3d for each line/tri
@@ -59,6 +62,11 @@ using namespace FixConst;
 #define DELTA 128
 #define DELTA_CONNECT 4     // make it larger when done testing
 #define DELTA_RVOUS 8       // must be >= 8, make it bigger when done testing
+
+enum{FLAT,CONCAVE,CONVEX};
+enum{SAME_SIDE,OPPOSITE_SIDE};
+
+#define FLATTHRESH 1.0-cos(MY_PI/180.0)    // default = 1 degree
 
 static constexpr int RVOUS = 1;   // 0 for irregular, 1 for all2all
 
@@ -111,6 +119,8 @@ FixSurfaceLocal::FixSurfaceLocal(LAMMPS *lmp, int narg, char **arg) :
     else mode = STLFILE;
   }
 
+  flatthresh = FLATTHRESH;
+  
   flag_complete = 0;
 }
 
@@ -269,7 +279,8 @@ void FixSurfaceLocal::post_constructor()
   if (dimension == 2) comm_border = 4 + 2*12;
   else comm_border = 8 + 6*12;
 
-  // output total of point matching stats
+  // output stats, same as FSG
+  
 }
 
 /* ----------------------------------------------------------------------
@@ -286,12 +297,16 @@ void FixSurfaceLocal::grow_arrays(int nmax)
 void FixSurfaceLocal::setup_pre_neighbor()
 {
   // one-time calcualtion of remaining fields in Connect2d/3d
-  // cannot do until now, b/c need ghost connections via border comm
-
+  // cannot do until now, b/c need ghost connection info via border comm
+  // re-communicate new owned-particle connectivity to ghost particles
+  
   if (!flag_complete) {
     if (dimension == 2) connectivity2d_complete();
     else connectivity3d_complete();
     flag_complete = 1;
+
+    clear_bonus();
+    comm->forward_comm(this);
   }
 
   pre_neighbor();
@@ -1092,6 +1107,25 @@ int FixSurfaceLocal::unpack_exchange(int nlocal, double *buf)
   }
 
   return m;
+}
+
+/* ----------------------------------------------------------------------
+   one-time forward comm of connectivity info from owned to ghost particles
+   same pack/unpack operations as comm->borders() uses
+------------------------------------------------------------------------- */
+
+int FixSurfaceLocal::pack_forward_comm(int n, int *list, double *buf,
+                                       int /*pbc_flag*/, int * /*pbc*/)
+{
+  int m = pack_border(n,list,buf);
+  return m;
+}
+
+/* ---------------------------------------------------------------------- */
+
+void FixSurfaceLocal::unpack_forward_comm(int n, int first, double *buf)
+{
+  int m = unpack_border(n,first,buf);
 }
 
 /* ----------------------------------------------------------------------
@@ -3299,15 +3333,400 @@ void FixSurfaceLocal::assign3d()
 
 void FixSurfaceLocal::connectivity2d_complete()
 {
+  // calculate endpts and normals for all owned+ghost line particles
+
+  double ***endpts,**normals;
+  memory->create(endpts,nlocal_connect+nghost_connect,2,3,"surface/local:endpts");
+  memory->create(normals,nlocal_connect+nghost_connect,3,"surface/local:normals");
+
+  AtomVecLine *avec = (AtomVecLine *) atom->style_match("line");
+  AtomVecLine::Bonus *bonus = avec->bonus;
+  double **x = atom->x;
+  int *line = atom->line;
+  int nall = atom->nlocal + atom->nghost;
   
+  int m,iconnect;
+  double length,theta,dx,dy;
+  double p12[3];
+  double zunit[3] = {0.0,0.0,1.0};
+    
+  for (int i = 0; i < nall; i++) {
+    if (line[i] < 0) continue;
+    m = line[i];
+    length = bonus[m].length;
+    theta = bonus[m].theta;
+    dx = 0.5*length*cos(theta);
+    dy = 0.5*length*sin(theta);
+
+    iconnect = atom2connect[i];
+
+    endpts[iconnect][0][0] = x[i][0] - dx;
+    endpts[iconnect][0][1] = x[i][1] - dy;
+    endpts[iconnect][0][2] = 0.0;
+    endpts[iconnect][1][0] = x[i][0] + dx;
+    endpts[iconnect][1][1] = x[i][1] + dy;
+    endpts[iconnect][1][2] = 0.0;
+
+    MathExtra::sub3(endpts[iconnect][1],endpts[iconnect][0],p12);
+    MathExtra::cross3(zunit,p12,normals[iconnect]);
+    MathExtra::norm3(normals[iconnect]);
+  }
+
+  // set connect2d pwhich/nside/aflag for each end point of each line
+  // see fsl.h file for an explanation of each vector in Connect2d
+  // aflag is based on dot and cross product of 2 connected line normals
+  //   cross product is either along +z or -z direction
+  
+  int nlocal = atom->nlocal;
+ 
+  int i,j,jconnect;
+  tagint jtag;
+  double rsq,dotline,dotnorm;
+  double *inorm,*jnorm;
+  double icrossj[3];
+
+  for (i = 0; i < nlocal; i++) {
+    if (line[i] < 0) continue;
+    iconnect = atom2connect[i];
+    
+    for (m = 0; m < connect2d[iconnect].np1; m++) {
+      jtag = connect2d[iconnect].neigh_p1[m];
+      j = atom->map(jtag);
+      jconnect = atom2connect[j];
+
+      inorm = normals[iconnect];
+      jnorm = normals[jconnect];
+      dotnorm = MathExtra::dot3(inorm,jnorm);
+
+      if (samepoint(endpts[iconnect][0],endpts[jconnect][0])) {
+        connect2d[iconnect].pwhich_p1[m] = 0;
+        connect2d[iconnect].nside_p1[m] = OPPOSITE_SIDE;
+        if (dotnorm < -1.0+flatthresh) {
+          connect2d[iconnect].aflag_p1[m] = FLAT;
+        } else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+          if (icrossj[2] > 0.0) connect2d[iconnect].aflag_p1[m] = CONCAVE;
+          else connect2d[iconnect].aflag_p1[m] = CONVEX;
+        }
+      } else if (samepoint(endpts[iconnect][0],endpts[jconnect][1])) {
+        connect2d[iconnect].pwhich_p1[m] = 1;
+        connect2d[iconnect].nside_p1[m] = SAME_SIDE;
+        if (dotnorm > 1.0-flatthresh) {
+          connect2d[iconnect].aflag_p1[m] = FLAT;
+        } else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+          if (icrossj[2] < 0.0) connect2d[iconnect].aflag_p1[m] = CONCAVE;
+          else connect2d[iconnect].aflag_p1[m] = CONVEX;
+        }
+      }
+    }
+    
+    for (m = 0; m < connect2d[iconnect].np2; m++) {
+      jtag = connect2d[iconnect].neigh_p2[m];
+      j = atom->map(jtag);
+      jconnect = atom2connect[j];
+
+      inorm = normals[iconnect];
+      jnorm = normals[jconnect];
+      dotnorm = MathExtra::dot3(inorm,jnorm);
+
+      dx = endpts[iconnect][1][0] - endpts[jconnect][0][0];
+      dy = endpts[iconnect][1][1] - endpts[jconnect][0][1];
+      rsq = dx*dx + dy*dy;
+
+      if (samepoint(endpts[iconnect][1],endpts[jconnect][0])) {
+        connect2d[iconnect].pwhich_p2[m] = 0;
+        connect2d[iconnect].nside_p2[m] = SAME_SIDE;
+        if (dotnorm > 1.0-flatthresh) {
+          connect2d[iconnect].aflag_p2[m] = FLAT;
+        } else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+          if (icrossj[2] > 0.0) connect2d[iconnect].aflag_p2[m] = CONCAVE;
+          else connect2d[iconnect].aflag_p2[m] = CONVEX;
+        }
+      } else if (samepoint(endpts[iconnect][1],endpts[jconnect][1])) {
+        connect2d[iconnect].pwhich_p2[m] = 1;
+        connect2d[iconnect].nside_p2[m] = OPPOSITE_SIDE;
+        if (dotnorm < -1.0+flatthresh) {
+          connect2d[iconnect].aflag_p2[m] = FLAT;
+        } else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+          if (icrossj[2] < 0.0) connect2d[iconnect].aflag_p2[m] = CONCAVE;
+          else connect2d[iconnect].aflag_p2[m] = CONVEX;
+        }
+      }
+    }
+  }
+
+  memory->destroy(endpts);
+  memory->destroy(normals);
 }
 
 /* ----------------------------------------------------------------------
-   assign values to all other fields in Connec3d for tri connections
+   assign values to all other fields in Connect3d for tri connections
    only ne1,ne2,ne3 and neigh_e123 were previously assigned
    only nc1,nc2,nc3 and neigh_c123 were previously assigned
 ------------------------------------------------------------------------- */
 
 void FixSurfaceLocal::connectivity3d_complete()
 {
+ // calculate corner pts and normals for all owned+ghost tri particles
+
+  double ***cpts,**normals;
+  memory->create(cpts,nlocal_connect+nghost_connect,3,3,"surface/local:cpts");
+  memory->create(normals,nlocal_connect+nghost_connect,3,"surface/local:normals");
+
+  AtomVecTri *avec = (AtomVecTri *) atom->style_match("tri");
+  AtomVecTri::Bonus *bonus = avec->bonus;
+  double **x = atom->x;
+  double **omega = atom->omega;
+  double **angmom = atom->angmom;
+  int *tri = atom->tri;
+  int nall = atom->nlocal + atom->nghost;
+  
+  int m,iconnect;
+  double p[3][3],p12[3],p13[3];
+
+  for (int i = 0; i < nall; i++) {
+    if (tri[i] < 0) continue;
+    m = tri[i];
+    iconnect = atom2connect[i];
+
+    MathExtra::quat_to_mat(bonus[m].quat,p);
+    MathExtra::matvec(p,bonus[m].c1,cpts[iconnect][0]);
+    MathExtra::add3(x[i],cpts[iconnect][0],cpts[iconnect][0]);
+    MathExtra::matvec(p,bonus[m].c2,cpts[iconnect][1]);
+    MathExtra::add3(x[i],cpts[iconnect][1],cpts[iconnect][1]);
+    MathExtra::matvec(p,bonus[m].c3,cpts[iconnect][2]);
+    MathExtra::add3(x[i],cpts[iconnect][2],cpts[iconnect][2]);
+
+    MathExtra::sub3(cpts[iconnect][1],cpts[iconnect][0],p12);
+    MathExtra::sub3(cpts[iconnect][2],cpts[iconnect][0],p13);
+    MathExtra::cross3(p12,p13,normals[iconnect]);
+    MathExtra::norm3(normals[iconnect]);
+  }
+
+  // set connect3d edge ewhich/nside/aflag for each edge of each tri
+  // see fsl.h file for an explanation of each edge vector in Connect3d
+  // aflag is based on dot and cross product of 2 connected tri normals
+  //   cross product is either along itri edge or in opposite dir
+  
+  int nlocal = atom->nlocal;
+ 
+  int i,j,jconnect,jpfirst,jpsecond;
+  tagint jtag;
+  double dotline,dotnorm;
+  double *inorm,*jnorm;
+  double icrossj[3],iedge[3];
+
+  for (i = 0; i < nlocal; i++) {
+    if (tri[i] < 0) continue;
+    iconnect = atom2connect[i];
+
+    for (m = 0; m < connect3d[iconnect].ne1; m++) {
+      jtag = connect3d[iconnect].neigh_e1[m];
+      j = atom->map(jtag);
+      jconnect = atom2connect[j];
+
+      if (samepoint(cpts[iconnect][0],cpts[jconnect][0])) jpfirst = 1;
+      else if (samepoint(cpts[iconnect][0],cpts[jconnect][1])) jpfirst = 2;
+      else if (samepoint(cpts[iconnect][0],cpts[jconnect][2])) jpfirst = 3;
+
+      if (samepoint(cpts[iconnect][1],cpts[jconnect][0])) jpsecond = 1;
+      else if (samepoint(cpts[iconnect][1],cpts[jconnect][1])) jpsecond = 2;
+      else if (samepoint(cpts[iconnect][1],cpts[jconnect][2])) jpsecond = 3;
+
+      inorm = normals[iconnect];
+      jnorm = normals[jconnect];
+      dotnorm = MathExtra::dot3(inorm,jnorm);
+      MathExtra::sub3(cpts[iconnect][1],cpts[iconnect][0],iedge);
+
+      if ((jpfirst == 1 && jpsecond == 2) ||
+          (jpfirst == 2 && jpsecond == 3) ||
+          (jpfirst == 3 && jpsecond == 1)) {
+        connect3d[iconnect].ewhich_e1[m] = jpfirst - 1;
+        connect3d[iconnect].nside_e1[m] = OPPOSITE_SIDE;
+        if (dotnorm < -1.0+flatthresh) connect3d[iconnect].aflag_e1[m] = FLAT;
+        else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+          if (MathExtra::dot3(icrossj,iedge) > 0.0)
+            connect3d[iconnect].aflag_e1[m] = CONCAVE;
+          else
+            connect3d[iconnect].aflag_e1[m] = CONVEX;
+        }
+      } else {
+        if (jpfirst == 2) connect3d[iconnect].ewhich_e1[m] = 0;
+        else if (jpfirst == 3) connect3d[iconnect].ewhich_e1[m] = 1;
+        else if (jpfirst == 1) connect3d[iconnect].ewhich_e1[m] = 2;
+        connect3d[iconnect].nside_e1[m] = SAME_SIDE;
+        if (dotnorm > 1.0-flatthresh) connect3d[iconnect].aflag_e1[m] = FLAT;
+        else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+          if (MathExtra::dot3(icrossj,iedge) < 0.0)
+            connect3d[iconnect].aflag_e1[m] = CONCAVE;
+          else
+            connect3d[iconnect].aflag_e1[m] = CONVEX;
+        }
+      }
+    }
+
+    for (m = 0; m < connect3d[iconnect].ne2; m++) {
+      jtag = connect3d[iconnect].neigh_e2[m];
+      j = atom->map(jtag);
+      jconnect = atom2connect[j];
+
+      if (samepoint(cpts[iconnect][1],cpts[jconnect][0])) jpfirst = 1;
+      else if (samepoint(cpts[iconnect][1],cpts[jconnect][1])) jpfirst = 2;
+      else if (samepoint(cpts[iconnect][1],cpts[jconnect][2])) jpfirst = 3;
+
+      if (samepoint(cpts[iconnect][2],cpts[jconnect][0])) jpsecond = 1;
+      else if (samepoint(cpts[iconnect][2],cpts[jconnect][1])) jpsecond = 2;
+      else if (samepoint(cpts[iconnect][2],cpts[jconnect][2])) jpsecond = 3;
+
+      inorm = normals[iconnect];
+      jnorm = normals[jconnect];
+      dotnorm = MathExtra::dot3(inorm,jnorm);
+      MathExtra::sub3(cpts[iconnect][2],cpts[iconnect][1],iedge);
+
+      if ((jpfirst == 1 && jpsecond == 2) ||
+          (jpfirst == 2 && jpsecond == 3) ||
+          (jpfirst == 3 && jpsecond == 1)) {
+        connect3d[iconnect].ewhich_e2[m] = jpfirst - 1;
+        connect3d[iconnect].nside_e2[m] = OPPOSITE_SIDE;
+        if (dotnorm < -1.0+flatthresh) connect3d[iconnect].aflag_e2[m] = FLAT;
+        else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+          if (MathExtra::dot3(icrossj,iedge) > 0.0)
+            connect3d[iconnect].aflag_e2[m] = CONCAVE;
+          else
+            connect3d[iconnect].aflag_e2[m] = CONVEX;
+        }
+      } else {
+        if (jpfirst == 2) connect3d[iconnect].ewhich_e2[m] = 0;
+        else if (jpfirst == 3) connect3d[iconnect].ewhich_e2[m] = 1;
+        else if (jpfirst == 1) connect3d[iconnect].ewhich_e2[m] = 2;
+        connect3d[iconnect].nside_e2[m] = SAME_SIDE;
+        if (dotnorm > 1.0-flatthresh) connect3d[iconnect].aflag_e2[m] = FLAT;
+        else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+          if (MathExtra::dot3(icrossj,iedge) < 0.0)
+            connect3d[iconnect].aflag_e2[m] = CONCAVE;
+          else
+            connect3d[iconnect].aflag_e2[m] = CONVEX;
+        }
+      }
+    }
+
+    for (m = 0; m < connect3d[iconnect].ne3; m++) {
+      jtag = connect3d[iconnect].neigh_e3[m];
+      j = atom->map(jtag);
+      jconnect = atom2connect[j];
+
+      if (samepoint(cpts[iconnect][2],cpts[jconnect][0])) jpfirst = 1;
+      else if (samepoint(cpts[iconnect][2],cpts[jconnect][1])) jpfirst = 2;
+      else if (samepoint(cpts[iconnect][2],cpts[jconnect][2])) jpfirst = 3;
+
+      if (samepoint(cpts[iconnect][0],cpts[jconnect][0])) jpsecond = 1;
+      else if (samepoint(cpts[iconnect][0],cpts[jconnect][1])) jpsecond = 2;
+      else if (samepoint(cpts[iconnect][0],cpts[jconnect][2])) jpsecond = 3;
+
+      inorm = normals[iconnect];
+      jnorm = normals[jconnect];
+      dotnorm = MathExtra::dot3(inorm,jnorm);
+      MathExtra::sub3(cpts[iconnect][0],cpts[iconnect][2],iedge);
+
+      if ((jpfirst == 1 && jpsecond == 2) ||
+          (jpfirst == 2 && jpsecond == 3) ||
+          (jpfirst == 3 && jpsecond == 1)) {
+        connect3d[iconnect].ewhich_e3[m] = jpfirst - 1;
+        connect3d[iconnect].nside_e3[m] = OPPOSITE_SIDE;
+        if (dotnorm < -1.0+flatthresh) connect3d[iconnect].aflag_e3[m] = FLAT;
+        else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+          if (MathExtra::dot3(icrossj,iedge) > 0.0)
+            connect3d[iconnect].aflag_e3[m] = CONCAVE;
+          else
+            connect3d[iconnect].aflag_e3[m] = CONVEX;
+        }
+      } else {
+        if (jpfirst == 2) connect3d[iconnect].ewhich_e3[m] = 0;
+        else if (jpfirst == 3) connect3d[iconnect].ewhich_e3[m] = 1;
+        else if (jpfirst == 1) connect3d[iconnect].ewhich_e3[m] = 2;
+        connect3d[iconnect].nside_e3[m] = SAME_SIDE;
+        if (dotnorm > 1.0-flatthresh) connect3d[iconnect].aflag_e3[m] = FLAT;
+        else {
+          MathExtra::cross3(inorm,jnorm,icrossj);
+          if (MathExtra::dot3(icrossj,iedge) < 0.0)
+            connect3d[iconnect].aflag_e3[m] = CONCAVE;
+          else
+            connect3d[iconnect].aflag_e3[m] = CONVEX;
+        }
+      }
+    }
+  }
+
+  // set connect3d cwhich for each end point of each line
+  // see fsl.h file for an explanation of each corner vector in Connect3d
+  // aflag is based on dot and cross product of 2 connected tri normals
+
+  for (int i = 0; i < ntris; i++) {
+    if (tri[i] < 0) continue;
+    iconnect = atom2connect[i];
+
+    for (m = 0; m < connect3d[iconnect].nc1; m++) {
+      jtag = connect3d[iconnect].neigh_c1[m];
+      j = atom->map(jtag);
+      jconnect = atom2connect[j];
+      if (samepoint(cpts[iconnect][0],cpts[jconnect][0])) 
+        connect3d[iconnect].cwhich_c1[m] = 0;
+      else if (samepoint(cpts[iconnect][0],cpts[jconnect][1])) 
+        connect3d[iconnect].cwhich_c1[m] = 1;
+      else if (samepoint(cpts[iconnect][0],cpts[jconnect][2])) 
+        connect3d[iconnect].cwhich_c1[m] = 2;
+    }
+    
+    for (m = 0; m < connect3d[iconnect].nc2; m++) {
+      jtag = connect3d[iconnect].neigh_c2[m];
+      j = atom->map(jtag);
+      jconnect = atom2connect[j];
+      if (samepoint(cpts[iconnect][1],cpts[jconnect][0])) 
+        connect3d[iconnect].cwhich_c2[m] = 0;
+      else if (samepoint(cpts[iconnect][1],cpts[jconnect][1])) 
+        connect3d[iconnect].cwhich_c2[m] = 1;
+      else if (samepoint(cpts[iconnect][1],cpts[jconnect][2])) 
+        connect3d[iconnect].cwhich_c2[m] = 2;
+    }
+    
+    for (m = 0; m < connect3d[iconnect].nc3; m++) {
+      jtag = connect3d[iconnect].neigh_c3[m];
+      j = atom->map(jtag);
+      jconnect = atom2connect[j];
+      if (samepoint(cpts[iconnect][2],cpts[jconnect][0])) 
+        connect3d[iconnect].cwhich_c3[m] = 0;
+      else if (samepoint(cpts[iconnect][2],cpts[jconnect][1])) 
+        connect3d[iconnect].cwhich_c3[m] = 1;
+      else if (samepoint(cpts[iconnect][2],cpts[jconnect][2])) 
+        connect3d[iconnect].cwhich_c3[m] = 2;
+    }
+  }
+
+  // clean up
+  
+  memory->destroy(cpts);
+  memory->destroy(normals);
+}
+
+/* ----------------------------------------------------------------------
+   return 1 if two points are same within eps
+   else return 0
+------------------------------------------------------------------------- */
+
+int FixSurfaceLocal::samepoint(double *pt1, double *pt2)
+{
+  double dx = pt1[0] - pt2[0];
+  double dy = pt1[1] - pt2[1];
+  double dz = pt1[2] - pt2[2];
+  double rsq = dx*dx + dy*dy + dz*dz;
+  if (rsq < epssq) return 1;
+  return 0;
 }

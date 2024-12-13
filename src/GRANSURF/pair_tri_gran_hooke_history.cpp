@@ -839,8 +839,8 @@ void PairTriGranHookeHistory::corners2norm(double *corners, double *norm)
 {
   double p12[3],p13[3];
 
-  MathExtra::sub3(&corners[0],&corners[3],p12);
-  MathExtra::sub3(&corners[0],&corners[6],p13);
+  MathExtra::sub3(&corners[3],&corners[0],p12);
+  MathExtra::sub3(&corners[6],&corners[0],p13);
   MathExtra::cross3(p12,p13,norm);
   MathExtra::norm3(norm);
 }

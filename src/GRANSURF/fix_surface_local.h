@@ -106,12 +106,15 @@ class FixSurfaceLocal : public Fix {
   int unpack_border(int, int, double *) override;
   int pack_exchange(int, double *) override;
   int unpack_exchange(int, double *) override;
+  int pack_forward_comm(int, int *, double *, int, int *) override;
+  void unpack_forward_comm(int, int, double *) override;
 
   double memory_usage() override;
 
  private:
   int dimension,mode;
   char *sourceID;
+  double flatthresh;
   int flag_complete;    // whether one-time connectivity info has been calculated
 
   class AtomVecLine *avec_line;
@@ -266,6 +269,7 @@ class FixSurfaceLocal : public Fix {
 
   void connectivity2d_complete();
   void connectivity3d_complete();
+  int samepoint(double *, double *);
 };
 
 }
