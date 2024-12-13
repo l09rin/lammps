@@ -205,7 +205,6 @@ class FixSurfaceGlobal : public Fix {
 
                           // counts, not including self
     int np1,np2;          // # of lines connected to endpts 1/2
-    int flatp1,flatp2;    // whether a flat surface extends from endpts 1/2
 
                           // pairs of endpoint connections
     int *neigh_p1;        // indices of lines connected to endpt 1

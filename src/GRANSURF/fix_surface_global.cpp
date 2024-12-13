@@ -2303,8 +2303,6 @@ void FixSurfaceGlobal::connectivity2d()
 
   for (int i = 0; i < nlines; i++) {
     connect2d[i].np1 = p1_counts[i];
-    connect2d[i].flatp1 = 0;
-    connect2d[i].flatp2 = 0;
     if (connect2d[i].np1 == 0) {
       connect2d[i].neigh_p1 = nullptr;
       connect2d[i].pwhich_p1 = nullptr;
@@ -2383,7 +2381,6 @@ void FixSurfaceGlobal::connectivity2d()
         connect2d[i].pwhich_p1[m] = 0;
         connect2d[i].nside_p1[m] = OPPOSITE_SIDE;
         if (dotnorm < -1.0+flatthresh) {
-          connect2d[i].flatp1 = 1;
           connect2d[i].aflag_p1[m] = FLAT;
         } else {
           MathExtra::cross3(inorm,jnorm,icrossj);
@@ -2394,7 +2391,6 @@ void FixSurfaceGlobal::connectivity2d()
         connect2d[i].pwhich_p1[m] = 1;
         connect2d[i].nside_p1[m] = SAME_SIDE;
         if (dotnorm > 1.0-flatthresh) {
-          connect2d[i].flatp1 = 1;
           connect2d[i].aflag_p1[m] = FLAT;
         } else {
           MathExtra::cross3(inorm,jnorm,icrossj);
@@ -2415,7 +2411,6 @@ void FixSurfaceGlobal::connectivity2d()
         connect2d[i].pwhich_p2[m] = 0;
         connect2d[i].nside_p2[m] = SAME_SIDE;
         if (dotnorm > 1.0-flatthresh) {
-          connect2d[i].flatp2 = 1;
           connect2d[i].aflag_p2[m] = FLAT;
         } else {
           MathExtra::cross3(inorm,jnorm,icrossj);
@@ -2426,7 +2421,6 @@ void FixSurfaceGlobal::connectivity2d()
         connect2d[i].pwhich_p2[m] = 1;
         connect2d[i].nside_p2[m] = OPPOSITE_SIDE;
         if (dotnorm < -1.0+flatthresh) {
-          connect2d[i].flatp2 = 1;
           connect2d[i].aflag_p2[m] = FLAT;
         } else {
           MathExtra::cross3(inorm,jnorm,icrossj);
