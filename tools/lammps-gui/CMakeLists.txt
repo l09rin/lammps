@@ -86,9 +86,7 @@ else()
       add_compile_options(/wd4244)
       add_compile_options(/wd4267)
       add_compile_options(/wd4250)
-      if(LAMMPS_EXCEPTIONS)
-        add_compile_options(/EHsc)
-      endif()
+      add_compile_options(/EHsc)
     endif()
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
   endif()
@@ -207,7 +205,7 @@ if(FLATPAK_COMMAND AND FLATPAK_BUILDER)
   file(STRINGS ${LAMMPS_DIR}/src/version.h line REGEX LAMMPS_VERSION)
   string(REGEX REPLACE "#define LAMMPS_VERSION \"([0-9]+) ([A-Za-z][A-Za-z][A-Za-z])[A-Za-z]* ([0-9]+)\""
                         "\\1\\2\\3" LAMMPS_RELEASE "${line}")
-  set(FLATPAK_BUNDLE "LAMMPS_GUI-Linux-amd64-${LAMMPS_RELEASE}.flatpak")
+  set(FLATPAK_BUNDLE "LAMMPS-Linux-x86_64-GUI-${LAMMPS_RELEASE}.flatpak")
   add_custom_target(flatpak
     COMMAND ${FLATPAK_COMMAND} --user remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
     COMMAND ${FLATPAK_BUILDER} --force-clean --verbose --repo=${CMAKE_CURRENT_BINARY_DIR}/flatpak-repo
