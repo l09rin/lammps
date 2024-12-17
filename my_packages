@@ -1,0 +1,6 @@
+make yes-dpd-basic
+make yes-molecule
+make yes-kspace
+make yes-extra-fix
+make yes-kokkos
+make yes-openmp
