@@ -350,6 +350,11 @@ void DomainKokkos::pbc()
     return;
   }
 
+  if (atom->x[0] != atomKK->k_x.h_view.data()) {
+    Domain::pbc();
+    return;
+  }
+
   double *lo,*hi,*period;
   int nlocal = atomKK->nlocal;
 
@@ -562,6 +567,11 @@ void DomainKokkos::operator()(TagDomain_image_flip, const int &i) const {
 
 void DomainKokkos::lamda2x(int n)
 {
+  if (atom->x[0] != atomKK->k_x.h_view.data()) {
+    Domain::lamda2x(n);
+    return;
+  }
+
   atomKK->sync(Device,X_MASK);
   x = atomKK->k_x.view<LMPDeviceType>();
 
@@ -574,6 +584,11 @@ void DomainKokkos::lamda2x(int n)
 
 void DomainKokkos::lamda2x(int n, int groupbit_in)
 {
+  if (atom->x[0] != atomKK->k_x.h_view.data()) {
+    Domain::lamda2x(n, groupbit_in);
+    return;
+  }
+
   atomKK->sync(Device,X_MASK);
   x = atomKK->k_x.view<LMPDeviceType>();
   mask = atomKK->k_mask.view<LMPDeviceType>();
@@ -614,6 +629,11 @@ void DomainKokkos::operator()(TagDomain_lamda2x_group, const int &i) const {
 
 void DomainKokkos::x2lamda(int n)
 {
+  if (atom->x[0] != atomKK->k_x.h_view.data()) {
+    Domain::x2lamda(n);
+    return;
+  }
+
   atomKK->sync(Device,X_MASK);
   x = atomKK->k_x.view<LMPDeviceType>();
 
@@ -626,6 +646,11 @@ void DomainKokkos::x2lamda(int n)
 
 void DomainKokkos::x2lamda(int n, int groupbit_in)
 {
+  if (atom->x[0] != atomKK->k_x.h_view.data()) {
+    Domain::x2lamda(n, groupbit_in);
+    return;
+  }
+
   atomKK->sync(Device,X_MASK);
   x = atomKK->k_x.view<LMPDeviceType>();
   mask = atomKK->k_mask.view<LMPDeviceType>();
