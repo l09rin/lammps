@@ -19,6 +19,7 @@ public:
   void getDMq(double *);
   void getDMq(double *, double *);
   void writeDMq(double *);
+  void writeDMq_all(void);
   void writeDMq(double *, const double, FILE *fp);
   int geteigen(double *, int);
   void reset_interp_method();

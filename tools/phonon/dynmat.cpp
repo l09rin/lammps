@@ -259,6 +259,60 @@ void DynMat::writeDMq(double *q)
 }
 
 /* ----------------------------------------------------------------------------
+ * method to write DM_q to file, single point
+ * ---------------------------------------------------------------------------- */
+void DynMat::writeDMq_all(void)
+{
+   FILE *fp;
+   // only ask for file name for the first time
+   // other calls will append the result to the file.
+   if (dmfile == nullptr){
+      char str[MAXLINE], *ptr;
+      printf("\n");
+      while ( true ){
+         printf("Please input the filename to output the DM at selected q: ");
+         input->read_stdin(str);
+         ptr = strtok(str, " \r\t\n\f");
+         if (ptr) break;
+      }
+
+      int n = strlen(ptr) + 1;
+      dmfile = new char[n];
+      strcpy(dmfile, ptr);
+      fp = fopen(dmfile,"w");
+
+   } else {
+      fp = fopen(dmfile,"a");
+   }
+   fprintf(fp,"############################################################\n");
+   fprintf(fp,"# Current time step                      : TIME_STEP\n");
+   fprintf(fp,"# Average temperature of the measurement : %.16g\n", Tmeasure);
+   fprintf(fp,"# Boltzmann constant under current units : %.16g\n", boltz);
+   fprintf(fp,"# basis vector A1 = [%15.8f %15.8f %15.8f]\n", basevec[0], basevec[1], basevec[2]);
+   fprintf(fp,"# basis vector A2 = [%15.8f %15.8f %15.8f]\n", basevec[3], basevec[4], basevec[5]);
+   fprintf(fp,"# basis vector A3 = [%15.8f %15.8f %15.8f]\n", basevec[6], basevec[7], basevec[8]);
+   fprintf(fp,"############################################################\n");
+   fprintf(fp,"# qx\tqy\tqz\tPhi(q)\n");
+
+   double q[3] ;
+   for (int ix = 0; ix < nx; ++ix){
+     q[0] = (double)ix/nx;
+     for (int iy = 0; iy < ny; ++iy){
+       q[1] = (double)iy/ny;
+       for (int iz = 0; iz < nz; ++iz){
+	 q[2] = (double)iz/nz;
+	 getDMq(q);
+	 fprintf(fp,"%.16g %.16g %.16g", q[0], q[1], q[2]);
+	 for (int i = 0; i < fftdim; ++i)
+	   for (int j = 0; j < fftdim; ++j) fprintf(fp," %.16g %.16g", DM_q[i][j].r, DM_q[i][j].i);
+	 fprintf(fp,"\n");
+       }
+     }
+   }
+   fclose(fp);
+}
+
+/* ----------------------------------------------------------------------------
  * method to write DM_q to file, dispersion-like
  * ---------------------------------------------------------------------------- */
 void DynMat::writeDMq(double *q, const double qr, FILE *fp)

@@ -33,6 +33,7 @@ private:
    void local_therm();
  
    void dmanyq();
+   void dmanyq_all();
    void vfanyq();
    void DMdisp();
    void vecanyq();

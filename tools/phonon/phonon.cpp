@@ -66,6 +66,7 @@ Phonon::Phonon(DynMat *dm)
 #ifdef FFTW3
       printf(" 11. Write input files for working with phonopy;\n");
 #endif
+      printf("  12. Dynamical matrix at every q;\n");
       printf(" -1. Reset the interpolation method;\n");
       printf("  0. Exit.\n");
       // read user choice
@@ -93,6 +94,7 @@ Phonon::Phonon(DynMat *dm)
          delete ph;
       }
 #endif
+      else if (job ==12) dmanyq_all(); 
       else if (job ==-1) dynmat->reset_interp_method();
       else break;
    }
@@ -413,6 +415,14 @@ void Phonon::dmanyq()
  
    dynmat->getDMq(q);
    dynmat->writeDMq(q);
+}
+
+/* ----------------------------------------------------------------------------
+ * Private method to write out the dynamical matrix at every q
+ * ---------------------------------------------------------------------------- */
+void Phonon::dmanyq_all()
+{
+   dynmat->writeDMq_all();
 }
 
 /* ----------------------------------------------------------------------------
