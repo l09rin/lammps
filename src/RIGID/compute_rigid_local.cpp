@@ -14,21 +14,24 @@
 
 #include "compute_rigid_local.h"
 #include <cstring>
+#include <cmath>
 #include "atom.h"
 #include "update.h"
 #include "domain.h"
+#include "math_const.h"
 #include "modify.h"
 #include "fix_rigid_small.h"
 #include "memory.h"
 #include "error.h"
 
 using namespace LAMMPS_NS;
+using namespace MathConst;
 
 static constexpr int DELTA = 10000;
 
 enum{ID,MOL,MASS,X,Y,Z,XU,YU,ZU,VX,VY,VZ,FX,FY,FZ,IX,IY,IZ,
      TQX,TQY,TQZ,OMEGAX,OMEGAY,OMEGAZ,ANGMOMX,ANGMOMY,ANGMOMZ,
-     QUATW,QUATI,QUATJ,QUATK,INERTIAX,INERTIAY,INERTIAZ};
+     QUATW,QUATI,QUATJ,QUATK,INERTIAX,INERTIAY,INERTIAZ,THETAZ};
 
 /* ---------------------------------------------------------------------- */
 
@@ -81,6 +84,7 @@ ComputeRigidLocal::ComputeRigidLocal(LAMMPS *lmp, int narg, char **arg) :
     else if (strcmp(arg[iarg],"inertiax") == 0) rstyle[nvalues++] = INERTIAX;
     else if (strcmp(arg[iarg],"inertiay") == 0) rstyle[nvalues++] = INERTIAY;
     else if (strcmp(arg[iarg],"inertiaz") == 0) rstyle[nvalues++] = INERTIAZ;
+    else if (strcmp(arg[iarg],"thetaz") == 0) rstyle[nvalues++] = THETAZ;
     else error->all(FLERR,"Invalid keyword in compute rigid/local command");
   }
 
@@ -124,6 +128,7 @@ void ComputeRigidLocal::init()
   ncount = compute_rigid(0);
   if (ncount > nmax) reallocate(ncount);
   size_local_rows = ncount;
+
 }
 
 /* ---------------------------------------------------------------------- */
@@ -279,7 +284,16 @@ int ComputeRigidLocal::compute_rigid(int flag)
         case INERTIAZ:
           ptr[n] = body->inertia[2];
           break;
-        }
+        case THETAZ: {
+	  double w = body->quat[0];
+	  double x = body->quat[1];
+	  double y = body->quat[2];
+	  double z = body->quat[3];
+          double theta = atan2(2 * (w*z + y*x), 1. - 2 * (y*y + z*z));
+          ptr[n] = theta;
+          break;
+	}
+	}
       }
     }
 
@@ -314,6 +328,7 @@ void ComputeRigidLocal::reallocate(int n)
 
 double ComputeRigidLocal::memory_usage()
 {
-  double bytes = (double)nmax*nvalues * sizeof(double);
+  //double bytes = (double)nmax*nvalues * sizeof(double);
+  double bytes = (double)nmax*(nvalues+1) * sizeof(double);
   return bytes;
 }

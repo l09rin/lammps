@@ -195,17 +195,24 @@ FixRigidSmall::FixRigidSmall(LAMMPS *lmp, int narg, char **arg) :
   if (customflag) ++iarg;
 
   while (iarg < narg) {
-    if (strcmp(arg[iarg],"langevin") == 0) {
-      if (iarg+5 > narg) error->all(FLERR,"Illegal fix {} command", style);
+    if (strcmp(arg[iarg],"langevin") == 0 || strcmp(arg[iarg],"langevin_rot") == 0) {
+      int DECOUPLED_ROT = 0;
+      if (strcmp(arg[iarg],"langevin_rot") == 0) DECOUPLED_ROT = 1;
+      if (iarg+5+DECOUPLED_ROT > narg) error->all(FLERR,"Illegal fix {} command", style);
       if (utils::strmatch(style, "^rigid/n.t/small"))
         error->all(FLERR,"Illegal fix {} command", style);
       langflag = 1;
       t_start = utils::numeric(FLERR,arg[iarg+1],false,lmp);
       t_stop = utils::numeric(FLERR,arg[iarg+2],false,lmp);
       t_period = utils::numeric(FLERR,arg[iarg+3],false,lmp);
+      if (DECOUPLED_ROT == 1) {
+	t_period_rot = utils::numeric(FLERR,arg[iarg+4],false,lmp);
+	iarg += 1;
+      } else
+	t_period_rot = t_period;
       seed = utils::inumeric(FLERR,arg[iarg+4],false,lmp);
-      if (t_period <= 0.0)
-        error->all(FLERR,"Fix {} langevin period must be > 0.0", style);
+      if (t_period <= 0.0 || t_period_rot <= 0.0)
+        error->all(FLERR,"Fix {} langevin period(s) must be > 0.0", style);
       if (seed <= 0) error->all(FLERR,"Illegal fix {} command", style);
       iarg += 5;
 
@@ -970,8 +977,8 @@ void FixRigidSmall::apply_langevin_thermostat()
     langextra[ibody][1] = gamma1*vcm[1] + gamma2*(random->uniform()-0.5);
     langextra[ibody][2] = gamma1*vcm[2] + gamma2*(random->uniform()-0.5);
 
-    gamma1 = -1.0 / t_period / ftm2v;
-    gamma2 = tsqrt * sqrt(24.0*boltz/t_period/dt/mvv2e) / ftm2v;
+    gamma1 = -1.0 / t_period_rot / ftm2v;
+    gamma2 = tsqrt * sqrt(24.0*boltz/t_period_rot/dt/mvv2e) / ftm2v;
 
     // convert omega from space frame to body frame
 
