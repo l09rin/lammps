@@ -70,7 +70,7 @@ void PairLJ64Cut::compute(int eflag, int vflag)
 {
   int i, j, ii, jj, inum, jnum, itype, jtype;
   double xtmp, ytmp, ztmp, delx, dely, delz, evdwl, fpair;
-  double rsq, r2inv, r6inv, forcelj, factor_lj;
+  double rsq, r2inv, r32inv, forcelj, factor_lj;
   int *ilist, *jlist, *numneigh, **firstneigh;
 
   evdwl = 0.0;
@@ -112,8 +112,11 @@ void PairLJ64Cut::compute(int eflag, int vflag)
 
       if (rsq < cutsq[itype][jtype]) {
         r2inv = 1.0 / rsq;
-        r6inv = r2inv * r2inv * r2inv;
-        forcelj = r6inv * (lj1[itype][jtype] * r6inv - lj2[itype][jtype]);
+	r32inv = r2inv * r2inv;
+	r32inv *= r32inv;
+	r32inv *= r32inv;
+	r32inv *= r32inv;
+        forcelj = r32inv * (lj1[itype][jtype] * r32inv - lj2[itype][jtype]);
         fpair = factor_lj * forcelj * r2inv;
 
         f[i][0] += delx * fpair;
@@ -126,7 +129,7 @@ void PairLJ64Cut::compute(int eflag, int vflag)
         }
 
         if (eflag) {
-          evdwl = r6inv * (lj3[itype][jtype] * r6inv - lj4[itype][jtype]) - offset[itype][jtype];
+          evdwl = r32inv * (lj3[itype][jtype] * r32inv - lj4[itype][jtype]) - offset[itype][jtype];
           evdwl *= factor_lj;
         }
 
@@ -144,7 +147,7 @@ void PairLJ64Cut::compute_inner()
 {
   int i, j, ii, jj, inum, jnum, itype, jtype;
   double xtmp, ytmp, ztmp, delx, dely, delz, fpair;
-  double rsq, r2inv, r6inv, forcelj, factor_lj, rsw;
+  double rsq, r2inv, r32inv, forcelj, factor_lj, rsw;
   int *ilist, *jlist, *numneigh, **firstneigh;
 
   double **x = atom->x;
@@ -187,11 +190,16 @@ void PairLJ64Cut::compute_inner()
       delz = ztmp - x[j][2];
       rsq = delx * delx + dely * dely + delz * delz;
 
+      // RECHECK THIS
+
       if (rsq < cut_out_off_sq) {
         r2inv = 1.0 / rsq;
-        r6inv = r2inv * r2inv * r2inv;
+	r32inv = r2inv * r2inv;
+	r32inv *= r32inv;
+	r32inv *= r32inv;
+	r32inv *= r32inv;
         jtype = type[j];
-        forcelj = r6inv * (lj1[itype][jtype] * r6inv - lj2[itype][jtype]);
+        forcelj = r32inv * (lj1[itype][jtype] * r32inv - lj2[itype][jtype]);
         fpair = factor_lj * forcelj * r2inv;
         if (rsq > cut_out_on_sq) {
           rsw = (sqrt(rsq) - cut_out_on) / cut_out_diff;
@@ -217,7 +225,7 @@ void PairLJ64Cut::compute_middle()
 {
   int i, j, ii, jj, inum, jnum, itype, jtype;
   double xtmp, ytmp, ztmp, delx, dely, delz, fpair;
-  double rsq, r2inv, r6inv, forcelj, factor_lj, rsw;
+  double rsq, r2inv, r32inv, forcelj, factor_lj, rsw;
   int *ilist, *jlist, *numneigh, **firstneigh;
 
   double **x = atom->x;
@@ -267,9 +275,12 @@ void PairLJ64Cut::compute_middle()
 
       if (rsq < cut_out_off_sq && rsq > cut_in_off_sq) {
         r2inv = 1.0 / rsq;
-        r6inv = r2inv * r2inv * r2inv;
+	r32inv = r2inv * r2inv;
+	r32inv *= r32inv;
+	r32inv *= r32inv;
+	r32inv *= r32inv;
         jtype = type[j];
-        forcelj = r6inv * (lj1[itype][jtype] * r6inv - lj2[itype][jtype]);
+        forcelj = r32inv * (lj1[itype][jtype] * r32inv - lj2[itype][jtype]);
         fpair = factor_lj * forcelj * r2inv;
         if (rsq < cut_in_on_sq) {
           rsw = (sqrt(rsq) - cut_in_off) / cut_in_diff;
@@ -299,7 +310,7 @@ void PairLJ64Cut::compute_outer(int eflag, int vflag)
 {
   int i, j, ii, jj, inum, jnum, itype, jtype;
   double xtmp, ytmp, ztmp, delx, dely, delz, evdwl, fpair;
-  double rsq, r2inv, r6inv, forcelj, factor_lj, rsw;
+  double rsq, r2inv, r32inv, forcelj, factor_lj, rsw;
   int *ilist, *jlist, *numneigh, **firstneigh;
 
   evdwl = 0.0;
@@ -349,8 +360,11 @@ void PairLJ64Cut::compute_outer(int eflag, int vflag)
       if (rsq < cutsq[itype][jtype]) {
         if (rsq > cut_in_off_sq) {
           r2inv = 1.0 / rsq;
-          r6inv = r2inv * r2inv * r2inv;
-          forcelj = r6inv * (lj1[itype][jtype] * r6inv - lj2[itype][jtype]);
+	  r32inv = r2inv * r2inv;
+	  r32inv *= r32inv;
+	  r32inv *= r32inv;
+	  r32inv *= r32inv;
+          forcelj = r32inv * (lj1[itype][jtype] * r32inv - lj2[itype][jtype]);
           fpair = factor_lj * forcelj * r2inv;
           if (rsq < cut_in_on_sq) {
             rsw = (sqrt(rsq) - cut_in_off) / cut_in_diff;
@@ -369,16 +383,22 @@ void PairLJ64Cut::compute_outer(int eflag, int vflag)
 
         if (eflag) {
           r2inv = 1.0 / rsq;
-          r6inv = r2inv * r2inv * r2inv;
-          evdwl = r6inv * (lj3[itype][jtype] * r6inv - lj4[itype][jtype]) - offset[itype][jtype];
+	  r32inv = r2inv * r2inv;
+	  r32inv *= r32inv;
+	  r32inv *= r32inv;
+	  r32inv *= r32inv;
+          evdwl = r32inv * (lj3[itype][jtype] * r32inv - lj4[itype][jtype]) - offset[itype][jtype];
           evdwl *= factor_lj;
         }
 
         if (vflag) {
           if (rsq <= cut_in_off_sq) {
             r2inv = 1.0 / rsq;
-            r6inv = r2inv * r2inv * r2inv;
-            forcelj = r6inv * (lj1[itype][jtype] * r6inv - lj2[itype][jtype]);
+	    r32inv = r2inv * r2inv;
+	    r32inv *= r32inv;
+	    r32inv *= r32inv;
+	    r32inv *= r32inv;
+            forcelj = r32inv * (lj1[itype][jtype] * r32inv - lj2[itype][jtype]);
             fpair = factor_lj * forcelj * r2inv;
           } else if (rsq < cut_in_on_sq)
             fpair = factor_lj * forcelj * r2inv;
