@@ -464,7 +464,12 @@ FixRigidSmall::FixRigidSmall(LAMMPS *lmp, int narg, char **arg) :
   maxlang = 0;
   langextra = nullptr;
   random = nullptr;
-  if (langflag) random = new RanMars(lmp,seed + comm->me);
+  if (langflag) {
+    random = new RanMars(lmp,seed + comm->me);
+    maxlang = nlocal_body + nghost_body;
+    memory->create(langextra,maxlang,6,"rigid/small:langextra");
+    for(i = 0; i < maxlang; i++) langextra[i][0] = 0, langextra[i][1] = 0, langextra[i][2] = 0, langextra[i][3] = 0, langextra[i][4] = 0, langextra[i][5] = 0;
+  }
 
   // mass vector for granular pair styles
 
@@ -716,7 +721,7 @@ void FixRigidSmall::setup(int vflag)
   commflag = FINAL;
   comm->forward_comm(this,10);
 
-  // set velocity/rotation of atoms in rigid bodues
+  // set velocity/rotation of atoms in rigid bodies
 
   set_v();
 
@@ -961,6 +966,7 @@ void FixRigidSmall::apply_langevin_thermostat()
   double ftm2v = force->ftm2v;
 
   double *vcm,*omega,*inertia,*ex_space,*ey_space,*ez_space;
+  double ftotlangevin[3] = {0.0, 0.0, 0.0}, ftotlangevinall[3];
 
   for (int ibody = 0; ibody < nlocal_body; ibody++) {
     vcm = body[ibody].vcm;
@@ -976,6 +982,9 @@ void FixRigidSmall::apply_langevin_thermostat()
     langextra[ibody][0] = gamma1*vcm[0] + gamma2*(random->uniform()-0.5);
     langextra[ibody][1] = gamma1*vcm[1] + gamma2*(random->uniform()-0.5);
     langextra[ibody][2] = gamma1*vcm[2] + gamma2*(random->uniform()-0.5);
+    ftotlangevin[0] += langextra[ibody][0];
+    ftotlangevin[1] += langextra[ibody][1];
+    ftotlangevin[2] += langextra[ibody][2];
 
     gamma1 = -1.0 / t_period_rot / ftm2v;
     gamma2 = tsqrt * sqrt(24.0*boltz/t_period_rot/dt/mvv2e) / ftm2v;
@@ -996,6 +1005,21 @@ void FixRigidSmall::apply_langevin_thermostat()
     // convert langevin torques from body frame back to space frame
 
     MathExtra::matvec(ex_space,ey_space,ez_space,tbody,&langextra[ibody][3]);
+  }
+
+  // zero langevin total force on center of mass
+
+  bigint nbody_local = nbody;
+  bigint nbody_total;
+  MPI_Allreduce(&nbody_local, &nbody_total, 1, MPI_LMP_BIGINT, MPI_SUM, world);
+  MPI_Allreduce(ftotlangevin,ftotlangevinall,3,MPI_DOUBLE,MPI_SUM,world);
+  ftotlangevinall[0] /= nbody_total;
+  ftotlangevinall[1] /= nbody_total;
+  ftotlangevinall[2] /= nbody_total;
+  for (int ibody = 0; ibody < nlocal_body; ibody++) {
+    langextra[ibody][0] -= ftotlangevinall[0];
+    langextra[ibody][1] -= ftotlangevinall[1];
+    langextra[ibody][2] -= ftotlangevinall[2];
   }
 }
 
@@ -1249,8 +1273,11 @@ void FixRigidSmall::deform(int flag)
 void FixRigidSmall::set_xv()
 {
   int xbox,ybox,zbox;
-  double x0,x1,x2,v0,v1,v2,fc0,fc1,fc2,massone;
+  // double x0,x1,x2,v0,v1,v2,fc0,fc1,fc2,massone;
+  double massone;
   double ione[3],exone[3],eyone[3],ezone[3],vr[6],p[3][3];
+  double fc[3], omegadot[3], omegadot_body[3], wbody[3], tbody[3], tspace[3], acc_rot[3], v_rot[3], acc_centr[3] ;
+  double *ex, *ey, *ez, *inertia, *torque, *omega, *lang1 ;
 
   double xprd = domain->xprd;
   double yprd = domain->yprd;
@@ -1279,7 +1306,7 @@ void FixRigidSmall::set_xv()
 
     // save old positions and velocities for virial
 
-    if (evflag) {
+    /* if (evflag) {
       if (triclinic == 0) {
         x0 = x[i][0] + xbox*xprd;
         x1 = x[i][1] + ybox*yprd;
@@ -1292,7 +1319,7 @@ void FixRigidSmall::set_xv()
       v0 = v[i][0];
       v1 = v[i][1];
       v2 = v[i][2];
-    }
+      } */
 
     // x = displacement from center-of-mass, based on body orientation
     // v = vcm + omega around center-of-mass
@@ -1302,11 +1329,86 @@ void FixRigidSmall::set_xv()
 
     v[i][0] = b->omega[1]*x[i][2] - b->omega[2]*x[i][1] + b->vcm[0];
     v[i][1] = b->omega[2]*x[i][0] - b->omega[0]*x[i][2] + b->vcm[1];
-    v[i][2] = b->omega[0]*x[i][1] - b->omega[1]*x[i][0] + b->vcm[2];
-
     if (domain->dimension == 2) {
       x[i][2] = 0.0;
       v[i][2] = 0.0;
+    } else v[i][2] = b->omega[0]*x[i][1] - b->omega[1]*x[i][0] + b->vcm[2];
+
+    // virial = unwrapped coords dotted into body constraint force
+    // body constraint force = from total acceleration minus langevin and f external
+    // assume f does not include forces internal to body
+    // 1/2 factor b/c final_integrate contributes other half
+    // assume per-atom contribution is due to constraint force on that atom
+
+    if (evflag) {
+      lang1 = langextra[atom2body[i]], ex = b->ex_space, ey = b->ey_space, ez = b->ez_space, inertia = b->inertia, torque = b->torque, omega = b->omega ;
+      if (rmass) massone = rmass[i];
+      else massone = mass[type[i]];
+      // fc0 = massone*(v[i][0] - v0)/dtf - f[i][0];
+      // fc1 = massone*(v[i][1] - v1)/dtf - f[i][1];
+      // fc2 = massone*(v[i][2] - v2)/dtf - f[i][2];
+      /* constraints contributing to angular acceleration do not contribute to the virial:
+      wbody[0] = omega[0]*ex[0] + omega[1]*ex[1] + omega[2]*ex[2];
+      wbody[1] = omega[0]*ey[0] + omega[1]*ey[1] + omega[2]*ey[2];
+      wbody[2] = omega[0]*ez[0] + omega[1]*ez[1] + omega[2]*ez[2];
+      if(langflag) {
+	tspace[0] = torque[0] - lang1[3];
+	tspace[1] = torque[1] - lang1[4];
+	tspace[2] = torque[2] - lang1[5];
+	tbody[0] = tspace[0]*ex[0] + tspace[1]*ex[1] + tspace[2]*ex[2];
+	tbody[1] = tspace[0]*ey[0] + tspace[1]*ey[1] + tspace[2]*ey[2];
+	tbody[2] = tspace[0]*ez[0] + tspace[1]*ez[1] + tspace[2]*ez[2];
+      } else {
+	tbody[0] = torque[0]*ex[0] + torque[1]*ex[1] + torque[2]*ex[2];
+	tbody[1] = torque[0]*ey[0] + torque[1]*ey[1] + torque[2]*ey[2];
+	tbody[2] = torque[0]*ez[0] + torque[1]*ez[1] + torque[2]*ez[2];
+      }
+      if (inertia[0] == 0.0) omegadot_body[0] = 0.0;
+      else omegadot_body[0] = (tbody[0] - (inertia[1] - inertia[2]) * wbody[1] * wbody[2]) / inertia[0];
+      if (inertia[1] == 0.0) omegadot_body[1] = 0.0;
+      else omegadot_body[1] = (tbody[1] - (inertia[2] - inertia[0]) * wbody[2] * wbody[0]) / inertia[1];
+      if (inertia[2] == 0.0) omegadot_body[2] = 0.0;
+      else omegadot_body[2] = (tbody[2] - (inertia[0] - inertia[1]) * wbody[0] * wbody[1]) / inertia[2];
+      if (domain->dimension == 2) {
+	omegadot[0] = 0.0;
+	omegadot[1] = 0.0;
+      } else {
+	omegadot[0] = omegadot_body[0]*ex[0] + omegadot_body[1]*ey[0] + omegadot_body[2]*ez[0];
+	omegadot[1] = omegadot_body[0]*ex[1] + omegadot_body[1]*ey[1] + omegadot_body[2]*ez[1];
+      }
+      omegadot[2] = omegadot_body[0]*ex[2] + omegadot_body[1]*ey[2] + omegadot_body[2]*ez[2];
+
+      MathExtra::cross3( omegadot, x[i], acc_rot) ;*/
+      MathExtra::cross3( omega, x[i], v_rot) ;
+      MathExtra::cross3( omega, v_rot, acc_centr) ;
+      if(langflag) {
+	fc[0] = massone * ((b->fcm[0]-lang1[0])/b->mass/* + acc_rot[0]*/ + acc_centr[0]) - f[i][0];
+	fc[1] = massone * ((b->fcm[1]-lang1[1])/b->mass/* + acc_rot[1]*/ + acc_centr[1]) - f[i][1];
+	if (domain->dimension == 2) fc[2] = 0.0;
+	else fc[2] = massone * ((b->fcm[2]-lang1[2])/b->mass/* + acc_rot[2]*/ + acc_centr[2]) - f[i][2];
+      } else {
+	fc[0] = massone * (b->fcm[0]/b->mass/* + acc_rot[0]*/ + acc_centr[0]) - f[i][0];
+	fc[1] = massone * (b->fcm[1]/b->mass/* + acc_rot[1]*/ + acc_centr[1]) - f[i][1];
+	if (domain->dimension == 2) fc[2] = 0.0;
+	else fc[2] = massone * (b->fcm[2]/b->mass/* + acc_rot[2]*/ + acc_centr[2]) - f[i][2];
+      }
+
+      // vr[0] = 0.5*x0*fc0;
+      // vr[1] = 0.5*x1*fc1;
+      // vr[2] = 0.5*x2*fc2;
+      // vr[3] = 0.5*x0*fc1;
+      // vr[4] = 0.5*x0*fc2;
+      // vr[5] = 0.5*x1*fc2;
+      vr[0] = 0.5*x[i][0]*fc[0];
+      vr[1] = 0.5*x[i][1]*fc[1];
+      vr[2] = 0.5*x[i][2]*fc[2];
+      vr[3] = 0.5*x[i][0]*fc[1];
+      vr[4] = 0.5*x[i][0]*fc[2];
+      vr[5] = 0.5*x[i][1]*fc[2];
+
+      double rlist[1][3] = {{x[i][0], x[i][1], x[i][2]}};
+      double flist[1][3] = {{0.5*fc[0], 0.5*fc[1], 0.5*fc[2]}};
+      v_tally(1,&i,1.0,vr,rlist,flist,b->xgc);
     }
 
     // add center of mass to displacement
@@ -1321,31 +1423,6 @@ void FixRigidSmall::set_xv()
       x[i][0] += b->xcm[0] - xbox*xprd - ybox*xy - zbox*xz;
       x[i][1] += b->xcm[1] - ybox*yprd - zbox*yz;
       x[i][2] += b->xcm[2] - zbox*zprd;
-    }
-
-    // virial = unwrapped coords dotted into body constraint force
-    // body constraint force = implied force due to v change minus f external
-    // assume f does not include forces internal to body
-    // 1/2 factor b/c final_integrate contributes other half
-    // assume per-atom contribution is due to constraint force on that atom
-
-    if (evflag) {
-      if (rmass) massone = rmass[i];
-      else massone = mass[type[i]];
-      fc0 = massone*(v[i][0] - v0)/dtf - f[i][0];
-      fc1 = massone*(v[i][1] - v1)/dtf - f[i][1];
-      fc2 = massone*(v[i][2] - v2)/dtf - f[i][2];
-
-      vr[0] = 0.5*x0*fc0;
-      vr[1] = 0.5*x1*fc1;
-      vr[2] = 0.5*x2*fc2;
-      vr[3] = 0.5*x0*fc1;
-      vr[4] = 0.5*x0*fc2;
-      vr[5] = 0.5*x1*fc2;
-
-      double rlist[1][3] = {{x0, x1, x2}};
-      double flist[1][3] = {{0.5*fc0, 0.5*fc1, 0.5*fc2}};
-      v_tally(1,&i,1.0,vr,rlist,flist,b->xgc);
     }
   }
 
@@ -1433,18 +1510,21 @@ void FixRigidSmall::set_xv()
 
 void FixRigidSmall::set_v()
 {
-  int xbox,ybox,zbox;
-  double x0,x1,x2,v0,v1,v2,fc0,fc1,fc2,massone;
+  // int xbox,ybox,zbox;
+  // double x0,x1,x2,v0,v1,v2,fc0,fc1,fc2,massone;
+  double massone;
   double ione[3],exone[3],eyone[3],ezone[3],delta[3],vr[6];
+  double fc[3], omegadot[3], omegadot_body[3], wbody[3], tbody[3], tspace[3], acc_rot[3], v_rot[3], acc_centr[3] ;
+  double *ex, *ey, *ez, *inertia, *torque, *omega, *lang1 ;
 
-  double xprd = domain->xprd;
+  /*double xprd = domain->xprd;
   double yprd = domain->yprd;
   double zprd = domain->zprd;
   double xy = domain->xy;
   double xz = domain->xz;
-  double yz = domain->yz;
+  double yz = domain->yz;*/
 
-  double **x = atom->x;
+  // double **x = atom->x;
   double **v = atom->v;
   double **f = atom->f;
   double *rmass = atom->rmass;
@@ -1462,20 +1542,19 @@ void FixRigidSmall::set_v()
 
     // save old velocities for virial
 
-    if (evflag) {
+    /* if (evflag) {
       v0 = v[i][0];
       v1 = v[i][1];
       v2 = v[i][2];
-    }
+      } */
 
     // compute new v
     // enforce 2d v
 
     v[i][0] = b->omega[1]*delta[2] - b->omega[2]*delta[1] + b->vcm[0];
     v[i][1] = b->omega[2]*delta[0] - b->omega[0]*delta[2] + b->vcm[1];
-    v[i][2] = b->omega[0]*delta[1] - b->omega[1]*delta[0] + b->vcm[2];
-
     if (domain->dimension == 2) v[i][2] = 0.0;
+    else v[i][2] = b->omega[0]*delta[1] - b->omega[1]*delta[0] + b->vcm[2];
 
     // virial = unwrapped coords dotted into body constraint force
     // body constraint force = implied force due to v change minus f external
@@ -1486,7 +1565,7 @@ void FixRigidSmall::set_v()
     if (evflag) {
       if (rmass) massone = rmass[i];
       else massone = mass[type[i]];
-      fc0 = massone*(v[i][0] - v0)/dtf - f[i][0];
+      /* fc0 = massone*(v[i][0] - v0)/dtf - f[i][0];
       fc1 = massone*(v[i][1] - v1)/dtf - f[i][1];
       fc2 = massone*(v[i][2] - v2)/dtf - f[i][2];
 
@@ -1502,17 +1581,72 @@ void FixRigidSmall::set_v()
         x0 = x[i][0] + xbox*xprd + ybox*xy + zbox*xz;
         x1 = x[i][1] + ybox*yprd + zbox*yz;
         x2 = x[i][2] + zbox*zprd;
+	} */
+
+      lang1 = langextra[atom2body[i]], ex = b->ex_space, ey = b->ey_space, ez = b->ez_space, inertia = b->inertia, torque = b->torque, omega = b->omega ;
+      /* constraints contributing to angular acceleration do not contribute to the virial
+      wbody[0] = omega[0]*ex[0] + omega[1]*ex[1] + omega[2]*ex[2];
+      wbody[1] = omega[0]*ey[0] + omega[1]*ey[1] + omega[2]*ey[2];
+      wbody[2] = omega[0]*ez[0] + omega[1]*ez[1] + omega[2]*ez[2];
+      if(langflag) {
+	tspace[0] = torque[0] - lang1[3];
+	tspace[1] = torque[1] - lang1[4];
+	tspace[2] = torque[2] - lang1[5];
+	tbody[0] = tspace[0]*ex[0] + tspace[1]*ex[1] + tspace[2]*ex[2];
+	tbody[1] = tspace[0]*ey[0] + tspace[1]*ey[1] + tspace[2]*ey[2];
+	tbody[2] = tspace[0]*ez[0] + tspace[1]*ez[1] + tspace[2]*ez[2];
+      } else {
+	tbody[0] = torque[0]*ex[0] + torque[1]*ex[1] + torque[2]*ex[2];
+	tbody[1] = torque[0]*ey[0] + torque[1]*ey[1] + torque[2]*ey[2];
+	tbody[2] = torque[0]*ez[0] + torque[1]*ez[1] + torque[2]*ez[2];
+      }
+      if (inertia[0] == 0.0) omegadot_body[0] = 0.0;
+      else omegadot_body[0] = (tbody[0] - (inertia[1] - inertia[2]) * wbody[1] * wbody[2]) / inertia[0];
+      if (inertia[1] == 0.0) omegadot_body[1] = 0.0;
+      else omegadot_body[1] = (tbody[1] - (inertia[2] - inertia[0]) * wbody[2] * wbody[0]) / inertia[1];
+      if (inertia[2] == 0.0) omegadot_body[2] = 0.0;
+      else omegadot_body[2] = (tbody[2] - (inertia[0] - inertia[1]) * wbody[0] * wbody[1]) / inertia[2];
+      if (domain->dimension == 2) {
+	omegadot[0] = 0.0;
+	omegadot[1] = 0.0;
+      } else {
+	omegadot[0] = omegadot_body[0]*ex[0] + omegadot_body[1]*ey[0] + omegadot_body[2]*ez[0];
+	omegadot[1] = omegadot_body[0]*ex[1] + omegadot_body[1]*ey[1] + omegadot_body[2]*ez[1];
+      }
+      omegadot[2] = omegadot_body[0]*ex[2] + omegadot_body[1]*ey[2] + omegadot_body[2]*ez[2];
+
+      MathExtra::cross3( omegadot, delta, acc_rot) ;  */
+      MathExtra::cross3( omega, delta, v_rot) ;
+      MathExtra::cross3( omega, v_rot, acc_centr) ;
+      if(langflag) {
+	fc[0] = massone * ((b->fcm[0]-lang1[0])/b->mass/* + acc_rot[0]*/ + acc_centr[0]) - f[i][0];
+	fc[1] = massone * ((b->fcm[1]-lang1[1])/b->mass/* + acc_rot[1]*/ + acc_centr[1]) - f[i][1];
+	if (domain->dimension == 2) fc[2] = 0.0;
+	else fc[2] = massone * ((b->fcm[2]-lang1[2])/b->mass/* + acc_rot[2]*/ + acc_centr[2]) - f[i][2];
+      } else {
+	fc[0] = massone * (b->fcm[0]/b->mass/* + acc_rot[0]*/ + acc_centr[0]) - f[i][0];
+	fc[1] = massone * (b->fcm[1]/b->mass/* + acc_rot[1]*/ + acc_centr[1]) - f[i][1];
+	if (domain->dimension == 2) fc[2] = 0.0;
+	else fc[2] = massone * (b->fcm[2]/b->mass/* + acc_rot[2]*/ + acc_centr[2]) - f[i][2];
       }
 
-      vr[0] = 0.5*x0*fc0;
-      vr[1] = 0.5*x1*fc1;
-      vr[2] = 0.5*x2*fc2;
-      vr[3] = 0.5*x0*fc1;
-      vr[4] = 0.5*x0*fc2;
-      vr[5] = 0.5*x1*fc2;
+      // vr[0] = 0.5*x0*fc0;
+      // vr[1] = 0.5*x1*fc1;
+      // vr[2] = 0.5*x2*fc2;
+      // vr[3] = 0.5*x0*fc1;
+      // vr[4] = 0.5*x0*fc2;
+      // vr[5] = 0.5*x1*fc2;
+      vr[0] = 0.5*delta[0]*fc[0];
+      vr[1] = 0.5*delta[1]*fc[1];
+      vr[2] = 0.5*delta[2]*fc[2];
+      vr[3] = 0.5*delta[0]*fc[1];
+      vr[4] = 0.5*delta[0]*fc[2];
+      vr[5] = 0.5*delta[1]*fc[2];
 
-      double rlist[1][3] = {{x0, x1, x2}};
-      double flist[1][3] = {{0.5*fc0, 0.5*fc1, 0.5*fc2}};
+      double rlist[1][3] = {{delta[0], delta[1], delta[2]}};
+      double flist[1][3] = {{0.5*fc[0], 0.5*fc[1], 0.5*fc[2]}};
+      //double rlist[1][3] = {{x0, x1, x2}};
+      //double flist[1][3] = {{0.5*fc0, 0.5*fc1, 0.5*fc2}};
       v_tally(1,&i,1.0,vr,rlist,flist,b->xgc);
     }
   }
